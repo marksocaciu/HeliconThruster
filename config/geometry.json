@@ -1,0 +1,23 @@
+{
+  "chamber": {
+    "radius": 0.03,
+    "length": 0.12,
+    "z_start": -0.12
+  },
+  "coils": [
+    {
+      "name": "coil_1",
+      "radius": 0.12,
+      "z_center": -0.12,
+      "turns": 100,
+      "current": 1.0
+    },
+    {
+      "name": "coil_2",
+      "radius": 0.12,
+      "z_center": 0.0,
+      "turns": 100,
+      "current": 1.0
+    }
+  ]
+}
