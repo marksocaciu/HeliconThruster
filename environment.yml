@@ -1,0 +1,10 @@
+name: helicon
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - fenics-dolfinx=0.10
+  - gmsh
+  - python-gmsh
+  - numpy
+  - matplotlib
