@@ -1,4 +1,28 @@
-# HeliconThruster magnetostatic design tool
+# HeliconThruster magnetostatics and global plasma model
+
+## Start the global argon plasma model (Mac or Linux)
+
+```sh
+python3 -m helicon.plasma --out runs/plasma-baseline --no-plots
+```
+
+This solves steady particle, neutral and power balances for mean electron
+density, electron temperature, neutral density, exit ion flow and power losses.
+The solver needs only standard Python: **no MPI, FEniCS or meshing step**.
+Open `runs/plasma-baseline/report.html`. For a budget figure, install
+`requirements-plasma.txt` and omit `--no-plots`, using a new output folder.
+
+The example is **500 W absorbed power and 1.5 mg/s argon**, with illustrative
+boundary loss ratios. It does not predict magnetic confinement, RF absorption,
+spatial profiles or thrust. See [the model specification](docs/plasma-model.md)
+for equations, rate sources, assumptions, overrides and verification. Rate fits
+are restricted to 1–7 eV; unsupported cases fail rather than extrapolate.
+
+For why the present magnetic solve uses real scalar elements, and why the
+future RF solve should use complex Nedelec elements, see
+[electromagnetic formulations](docs/electromagnetic-formulations.md).
+
+## Magnetostatic workflow
 
 Parameterized axisymmetric Gmsh geometry, a serial FEniCSx magnetostatic solver,
 repeatable run records, field reports, numerical sensitivity studies, and coil

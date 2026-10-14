@@ -1,0 +1,15 @@
+{
+  "model": "argon_global_0d_v1",
+  "gas": "argon",
+  "absorbed_power_W": 500.0,
+  "mass_flow_kg_s": 1.5e-6,
+  "neutral_temperature_K": 400.0,
+  "losses": {
+    "side_density_ratio": 0.1,
+    "back_density_ratio": 0.5,
+    "exit_density_ratio": 0.5,
+    "wall_recycling_fraction": 1.0,
+    "neutral_exit_transmission": 1.0
+  },
+  "description": "Illustrative 500 W absorbed-power case. Boundary-to-volume-mean density ratios are assumed, not fitted to the magnetic field or measured plasma."
+}

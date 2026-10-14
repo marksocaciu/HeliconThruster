@@ -1,0 +1,3 @@
+# The plasma solver itself uses only the Python standard library.
+# Needed only for PNG figures (use --no-plots to omit them).
+matplotlib>=3.9,<4
