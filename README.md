@@ -1,204 +1,299 @@
-# HeliconThruster: first magnetostatic geometry
+# HeliconThruster magnetostatic design tool
 
-A parameterized **2D axisymmetric meridional mesh** for a cylindrical discharge
-chamber, dielectric side wall, rectangular coil winding packs, surrounding air,
-and a downstream observation region. The mesh generator and independent field
-reference run on Apple Silicon without MPI. A separate FEniCSx starter solver is
-provided for Ubuntu.
+Parameterized axisymmetric Gmsh geometry, a serial FEniCSx magnetostatic solver,
+repeatable run records, field reports, numerical sensitivity studies, and coil
+parameter sweeps. The FEM workflow runs on Ubuntu. Meshing, study preparation,
+and plotting saved results run on the Mac without MPI.
 
-## Quick start on this Mac (no MPI)
+## Start here on Ubuntu
 
-The installed Homebrew Python and Gmsh were used for verification:
-
-```sh
-cd /Users/mark/Documents/HeliconThruster
-/opt/homebrew/bin/python3 -m helicon.mesh
-/opt/homebrew/bin/python3 -m helicon.preview
-/opt/homebrew/bin/python3 -m helicon.reference
-/opt/homebrew/bin/gmsh build/helicon.msh
-```
-
-For a portable, isolated geometry environment:
+From this project folder, using the Python environment that ran your previous
+FEniCSx solve:
 
 ```sh
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python -m helicon.mesh
-python -m helicon.preview
-python -m helicon.reference
-python -m unittest discover -s tests -v
+python3 -m helicon.run --out runs/baseline --target-gauss 140
 ```
 
-The Homebrew Gmsh Python API is discovered automatically when it is not on
-Python's import path. This does not modify the installed environment.
-`python -m helicon.mesh --gui` opens the generated mesh directly.
-`geometry/geom.geo` is a convenience entry that opens `build/helicon.msh`;
-the parameterized geometry source is `helicon/mesh.py`, not the `.geo` viewer.
+Open `runs/baseline/report.html` in a browser. It contains field magnitude maps,
+magnetic field lines, axial and radial profiles, and a summary in gauss.
+`--out` must be a **new directory**; previous results are never overwritten by
+this workflow. For another run use another name, such as `runs/baseline-02`.
 
-## Geometry and assumptions
+Your current configuration retains **100 turns and 18.98 A in both coils**.
+The original Ubuntu solver run you supplied reported a chamber mean of 140.022 G
+and an on-axis exit field of 133.16 G. That is evidence for the original solver;
+the new sampling and reporting additions still require their first Ubuntu run.
+Matching the mean by adjusting current is calibration, not independent validation.
 
-Edit `config/geometry.json`. All lengths are **metres**, current is **amperes**.
-Gmsh stores `(x,y,z) = (r, axial_z, 0)`; its y coordinate is the physical axial
-coordinate. Revolving this half-plane around r=0 describes the 3D device.
-Do not interpret the displayed rectangles as planar current bars.
+The target option changes scoring/reporting; it **does not automatically tune
+currents**. Currents and coil positions come from `config/geometry.json` or a
+configuration supplied with `--config`.
 
-| Parameter | Initial value | Provenance |
-|---|---:|---|
-| Chamber inner radius | 30 mm | Existing project configuration/shared chat |
-| Chamber length | 120 mm | Existing project configuration/shared chat |
-| Chamber axial interval | −120 to 0 mm | Existing project configuration/shared chat |
-| Coil mean radius | 120 mm | Existing project configuration/shared chat |
-| Coil centers | −120 and 0 mm | Existing project configuration/shared chat |
-| Turns / current per coil | 100 / 1 A | Existing placeholders; not published winding data |
-| Dielectric side-wall thickness | 3 mm | Prototype assumption |
-| Winding pack radial × axial size | 10 × 15 mm | Prototype assumption |
-| Outer domain | r=0…600 mm, z=−720…600 mm | Prototype truncation; requires convergence study |
-| Downstream observation region | r=0…60 mm, z=0…180 mm | Prototype diagnostic region |
+## 1. Reproducible run records
 
-The wall is an open-ended cylindrical **side wall**, without end plates,
-backplate, feed system, or antenna. The downstream region is an observation
-volume, not a solid nozzle. Every material initially uses μ=μ₀. No plasma
-currents, permanent magnets, magnetic steel, RF fields, or thrust model are
-included. These dimensions are a starting point, not an exact replication of
-a published device; the source paper and winding details have not been
-independently verified in this implementation.
+Each run directory contains:
 
-The generator rejects non-finite/non-positive sizes, duplicate physical names,
-overlapping regions, and regions outside the outer boundary. The JSON schema
-also documents allowed fields. Geometry relationships are checked in Python.
+| File | Purpose |
+|---|---|
+| `run.json` | Status, full configuration, effective mesh sizes, coil ampere-turns/current densities, solver settings, code identity, stage commands, timestamps, hashes, results |
+| `source/` | Snapshot of Python source and dependency recipes used for this run |
+| `input.json`, `geometry.json` | Requested and meshed input snapshots |
+| `mesh_report.json` | Physical tags, region areas, node/triangle counts |
+| `mesh.log`, `solve.log`, `plot.log` | Complete stage output and errors |
+| `solver_environment.json` | Actual Python, DOLFINx, PETSc, MPI and package versions |
+| `fem_summary.json` | Metrics in SI and convenient gauss/percentage units |
+| `fem_axis.csv` | Chamber centerline FEM and independent finite-pack reference |
+| `fem_exit.csv` | Radius, Br, Bz and magnitude at the chamber exit |
+| `field_device.npz`, `field_full.npz` | Sampled FEM potential and magnetic field on plotting grids |
+| `report.html`, `report.md`, `*.png` | Human-readable results and plots |
+| `field.xdmf`/`.h5`, `potential.xdmf`/`.h5` | ParaView visualization |
 
-## Mesh and physical groups
+Every coil record includes N, I, N I, its center, mean radius, winding dimensions,
+and uniform current density `N I / (radial_thickness * axial_width)`.
+Software versions and source snapshots aid reproducibility; dependency recipes
+are not exact cross-platform binary lockfiles.
 
-OpenCASCADE fragments the full domain so all interfaces share nodes. Every
-surface belongs to exactly one material group. No magnetic boundary condition
-is applied at the chamber wall, inlet, exit, or downstream observation interface.
+A failed stage marks the run **failed**, retaining its diagnostic log and inputs.
+A failed or incomplete run is never included in a successful design ranking.
 
-| Physical name | Dimension | ID |
-|---|---:|---:|
-| PLASMA_CHAMBER | 2 | 1 |
-| CHAMBER_WALL | 2 | 2 |
-| DOWNSTREAM_REGION | 2 | 3 |
-| SURROUNDING_AIR | 2 | 4 |
-| COIL_1, COIL_2, … | 2 | 101, 102, … |
-| AXIS | 1 | 11 |
-| FAR_BOUNDARY | 1 | 12 |
-
-Coil names come from the configuration and IDs follow list order. Mesh sizes
-are 3 mm in the chamber, 1.5 mm in the wall, 2 mm in the coils, 5 mm downstream,
-and 40 mm far away, with transition zones. The initial mesh has linear triangles;
-the FEniCSx solution space is independently chosen as quadratic (P2).
+The old commands still work, but their `build/` directory is a replaceable scratch
+workspace. Use `helicon.run` for preserved experiments:
 
 ```sh
-python -m helicon.mesh --scale 0.5 --out build-fine
-python -m helicon.preview --build build-fine
+python3 -m helicon.mesh
+python3 -m helicon.solve --build build --target-gauss 140
+python3 -m helicon.plot --build build
 ```
 
-A smaller scale refines all target sizes. A custom configuration can be supplied
-with `--config path/to/geometry.json`. Each build saves a configuration snapshot;
-the solver reads that snapshot to avoid using currents or dimensions from a
-subsequently edited configuration with an old mesh.
+Replotting requires mesh/configuration hashes to match the solve. No MPI is
+needed to plot the saved CSV/NPZ results, so a full run folder can be copied back
+to the Mac for inspection. The HTML uses local image files: keep the folder intact.
 
-Generated files in `build/`:
+## 2. Mesh and outer-domain sensitivity
 
-- `helicon.msh`: Gmsh MSH 4.1 with physical tags, suitable for FEniCSx import.
-- `helicon.brep`: CAD geometry only; BREP does not preserve physical tags.
-- `helicon.geo`: viewer entry that loads the mesh.
-- `geometry.json`, `mesh_report.json`: configuration, physical IDs, areas, counts.
-- `mesh_preview.png`: actual mesh, colored by physical group.
-- `reference_axis.csv`, `.png`, and `reference_summary.json`: independent field check.
+```sh
+python3 -m helicon.study convergence \
+  --out runs/convergence \
+  --mesh-scales 1 0.5 0.25 \
+  --domain-factors 1 1.5 2 \
+  --target-gauss 140 --tolerance-percent 1
+```
 
-## Immediate independent magnetic-field check
+This runs six serial cases:
 
-`helicon.reference` integrates the analytical circular-loop field over each
-rectangular winding pack using Gauss–Legendre quadrature. The total ampere-turns
-are N I, and the homogenized current density is `J_theta = N I / (width*thickness)`.
-The sign of current sets the sign of the axial field.
+1. Three mesh sizes on the original domain. A factor of 0.5 halves **all** target
+   element lengths, including transition lengths.
+2. Three outer-domain sizes using the finest requested mesh scale (0.25 here).
+   The outer radius and distances of the axial bounds from the chamber midpoint
+   grow with the domain factor. Chamber, wall, coil and downstream geometry stay
+   fixed, as do all mesh size settings during the domain study. The actual
+   triangulation can change when the domain is remeshed.
 
-For the checked-in 100-turn, 1 A configuration, the free-space reference gives:
+It writes `comparison.csv`, `comparison.png`, `study_report.md`, and
+`study_summary.json`. The report tracks chamber mean Bz, Bz standard deviation,
+Br RMS, on-axis exit Bz, exit area-average Bz, uniformity, and reference error.
 
-- Chamber center Bz: **0.749227 mT**.
-- Chamber exit Bz: **0.708176 mT**.
-- Scaling both coil currents by approximately **18.6859** would give **14 mT
-  at the center** under this idealized model. This is not a volume-average fit,
-  not a verified published operating point, and not a coil thermal design.
+The convergence decision requires **all cases completed with the same source
+snapshot and runtime environment**, both final successive pairs within tolerance, and the final enlarged
+domain's centerline reference error within tolerance. Each scalar change is
+relative to its value in the finer/larger case, with a denominator floor of
+`1e-6 * target field` to handle nearly zero quantities. Absolute changes as a
+percentage of the target are also reported. The centerline uses a relative
+Euclidean norm on the same 121 sample locations.
 
-The reference has no finite outer boundary. A FEM comparison must account for
-both mesh error and outer-domain truncation. The reference output is clearly
-labeled and is not presented as a FEM solution.
+Passing means the **tested sensitivity criteria** are met. It is not a proof of
+experimental validity or accuracy everywhere. Review the complete trends: if
+changes are irregular or near the threshold, add a finer mesh/larger domain.
+If the mesh sequence fails, resolve that before accepting the domain sequence.
+The exit-area Bz is calculated from flux, `2*A_theta(R,z_exit)/R`, rather than
+integrating plot pixels. Exit mean magnitude uses 64-point radial quadrature.
 
-## FEniCSx starter on x86 Ubuntu
+## 3. Field plots and readable results
 
-Keep the entire project together when copying it to Ubuntu. Create a separate
-Conda environment using `environment.yml` (installation recipe, not a lockfile):
+Every full run automatically creates:
+
+- `profiles.png`: chamber centerline versus the independent Biot–Savart
+  finite-winding-pack reference, plus the radial exit profile.
+- `field_device.png`: field magnitude and field lines around the source and coils.
+- `field_full.png`: field magnitude and field lines over the computational domain.
+
+The field lines are contours of the axisymmetric flux function `psi = r*A_theta`.
+They show paths; they do not show arrow direction. Colors show magnitude. The
+full-domain plot helps reveal the effect of the artificial outer boundary.
+
+The regular plotting grids are visualization samples only. Metrics and design
+scores use FEM volume integrals and direct FEM point evaluations. Gradients are
+obtained from the quadratic potential and represented exactly as DG1 within each
+linear triangular cell. At interfaces the point sampler selects one incident
+cell, so derivative traces can differ until the mesh is converged.
+
+The chamber mean, axis exit value, and exit disk average are distinct quantities.
+They are all printed in gauss, so checking the 130 G exit benchmark no longer
+requires a separate shell calculation. `1 T = 10,000 G`.
+
+## 4. Coil parameter studies
+
+Two example specifications are provided. Each describes a Cartesian product
+of parameter choices (nine runs per example).
+
+```sh
+# Independently vary each coil's ampere-turns.
+python3 -m helicon.study sweep \
+  --spec config/sweep_currents.json --out runs/current-sweep \
+  --scale 0.5 --target-gauss 140 --tolerance-percent 1
+
+# Independently move the two coil centers.
+python3 -m helicon.study sweep \
+  --spec config/sweep_positions.json --out runs/position-sweep \
+  --scale 0.5 --target-gauss 140 --tolerance-percent 1
+```
+
+Use a mesh scale established by your sensitivity study for design decisions;
+0.5 is just a convenient starting example. The same `parameters` list can mix
+positions and ampere-turns. Supported fields:
+
+- `z_center`: metres, absolute axial coordinate.
+- `ampere_turns`: signed A-turn; mapped to current using the configured turn count.
+
+Example:
+
+```json
+{
+  "parameters": [
+    {"coil": "coil_1", "field": "ampere_turns", "values": [1700, 1898, 2100]},
+    {"coil": "coil_2", "field": "z_center", "values": [-0.02, 0.0, 0.02]}
+  ]
+}
+```
+
+Invalid geometries, such as overlapping coils, are recorded and excluded.
+The default maximum is 64 cases; larger studies require an explicit `--max-cases`.
+Each case currently generates its own mesh and FEM solution. Current-only sweeps
+could later reuse unit-current basis fields, but this implementation uses full
+solves for consistency and transparent run records.
+
+The ranking minimizes the dimensionless score
+
+```
+sqrt( <(Bz - B_target)^2 + Br^2>_chamber ) / B_target
+```
+
+where the brackets use the axisymmetric volume weight `2*pi*r`. It penalizes
+mean-field error, nonuniformity and radial field with equal weights. Ranking is
+by this score; a separate flag says whether each case meets the requested
+mean-field tolerance. A best-scoring case can still miss the target, so check
+that flag. A low score says nothing about coil power, mass, heating, RF coupling,
+plasma production or thrust. Those constraints and models need additional data.
+
+## Prepare on Mac, execute on Ubuntu, continue interrupted studies
+
+Prepare studies without loading MPI or generating their meshes:
+
+```sh
+python3 -m helicon.study convergence --out runs/prepared --prepare-only
+python3 -m helicon.study sweep --spec config/sweep_currents.json \
+  --out runs/prepared-sweep --prepare-only
+```
+
+Copy the project and the prepared study directory to Ubuntu, then:
+
+```sh
+python3 -m helicon.study execute runs/prepared
+```
+
+The plan stores complete configuration snapshots. It does not depend on later
+edits to `config/geometry.json`. Completed cases with matching inputs and hashes
+are preserved and skipped. Failed cases can be retried explicitly:
+
+```sh
+python3 -m helicon.study execute runs/prepared --retry-failed
+```
+
+Previous failed folders are archived under `attempts/`. A folder marked running
+or partial is preserved; inspect whether its process is still active before
+starting a new study. Recalculate a comparison without rerunning any solver:
+
+```sh
+python3 -m helicon.study summarize runs/prepared
+```
+
+Incomplete studies return a nonzero exit status. A fully completed study returns
+zero even when its sensitivity criterion fails; read `sensitivity_criteria_met`
+in the JSON/report. Do not equate process success with numerical convergence.
+
+For a local Mac geometry-only run:
+
+```sh
+/opt/homebrew/bin/python3 -m helicon.run --out runs/mac-preview --mesh-only
+```
+
+FEM cases currently run sequentially on one MPI rank. Invoke Python directly.
+Do not launch the study runner with `mpirun`: that would launch duplicate drivers.
+The solver itself rejects multi-rank execution. Distributed solves and parallel
+sweep scheduling are not implemented.
+
+## Geometry, formulation, and provenance
+
+All lengths in `config/geometry.json` are metres. Gmsh coordinates are
+`(x,y,z) = (r, physical axial z, 0)`.
+
+| Quantity | Value / source |
+|---|---|
+| Chamber radius / length | 30 / 120 mm; paper benchmark |
+| Chamber axial interval | −120 to 0 mm |
+| Coil mean radius / centers | 120 mm / z = −120, 0 mm; paper benchmark |
+| Turns / currents | 100 / 18.98 A each; chosen to match the target, not measured winding data |
+| Side-wall thickness | 3 mm; prototype assumption, no end plates |
+| Pack radial × axial dimensions | 10 × 15 mm; prototype assumption |
+| Outer domain | r = 0…600 mm, z = −720…600 mm; convergence parameter |
+| Downstream observation region | r = 0…60 mm, z = 0…180 mm; diagnostic volume |
+
+The published example sets the **volume-average axial source field to 140 G**
+and reports an exit magnitude slightly above 130 G. The geometry dimensions
+above are stated in its preliminary sizing/detailed design sections. Winding
+cross-sections and turns remain our assumptions, so this is an idealized
+magnetostatic benchmark inspired by that configuration, not an exact hardware
+or full multiphysics reproduction.
+
+Source: [Iannarelli et al., A novel simulation framework for Helicon plasma
+thrusters design (2026)](https://link.springer.com/article/10.1007/s44205-026-00197-7).
+
+OpenCASCADE fragments material regions into one conforming mesh. Physical IDs:
+chamber 1, wall 2, downstream 3, air 4, coils 101 onward; axis 11 and far boundary
+12. Coil IDs follow configuration order. All permeabilities equal mu0, with
+`J_theta=N*I/pack_area` in each coil. No magnetic BC is imposed on chamber walls
+or its inlet/exit.
+
+The P2 scalar unknown is A_theta, with `Br=-A_theta,z` and
+`Bz=A_theta,r + A_theta/r`. The weak form is
+
+```
+∫ (r/mu0) [A_z*v_z + (A_r+A/r)*(v_r+v/r)] dr dz = ∫ J_theta*v*r dr dz.
+```
+
+A_theta=0 on the axis and artificial far boundary. The on-axis field uses the
+regular limit Bz=2*A_theta,r. The XDMF field is a cell-center visualization; the
+potential XDMF interpolates P2 to P1 and is not a restart file.
+
+## Installation and checks
+
+Use the existing Ubuntu environment that ran the benchmark, or create one:
 
 ```sh
 conda env create -f environment.yml
 conda activate helicon
-python -m helicon.mesh
-python -m helicon.solve --build build
 ```
 
-**Status:** the mesh and reference workflow were executed and tested on the Mac.
-The FEniCSx code was syntax-checked and reviewed against the 0.10 API, but the
-installed Mac MPI runtime aborts before importing DOLFINx. Therefore the FEM
-solve and its exports remain **unverified until run on Ubuntu**.
+The MPI-free modules require `requirements.txt`; Homebrew Gmsh is detected on
+the Mac when its Python module is outside site-packages.
 
-The first solver deliberately runs on one MPI rank: invoke `python` directly.
-FEniCSx still uses an MPI runtime in this mode. Parallel distributed point
-sampling and solver configuration are a later extension; this initial code
-rejects multi-rank execution explicitly rather than reporting incomplete
-magnetic-field diagnostics. No local MPI or OpenMP settings are changed.
-
-The unknown is A_theta(r,z), with
-
-```
-B_r = -∂A_theta/∂z
-B_z = ∂A_theta/∂r + A_theta/r
+```sh
+python3 -m unittest discover -s tests -v
 ```
 
-The weak form, with the common 2π factor canceled, is
-
-```
-∫ (r/μ₀) [ A_z v_z + (A_r + A/r)(v_r + v/r) ] dr dz
-    = ∫ J_theta v r dr dz.
-```
-
-`A_theta=0` is imposed on AXIS (regularity) and FAR_BOUNDARY (finite-domain
-approximation). Numerical quadrature uses interior points with r>0. On-axis
-sampling uses the regular limit `B_z(0,z)=2 ∂A_theta/∂r`, not division by zero.
-Chamber metrics use the 3D volume weight `2πr`.
-
-Expected solver outputs:
-
-- `fem_summary.json`: chamber mean Bz, Bz standard deviation, Br RMS, and
-  on-axis relative L2 error versus the independent finite-pack reference.
-- `fem_axis.csv`: chamber on-axis FEM/reference samples.
-- `field.xdmf`/`.h5`: cell-center `(B_r,B_z)` visualization in ParaView.
-- `potential.xdmf`/`.h5`: P1 visualization of the P2 potential. This visualization
-  does not retain all P2 degrees of freedom and is not a restart file.
-
-For the first Ubuntu verification, run the baseline and `--scale 0.5` mesh,
-then enlarge the outer domain in a separate configuration while keeping local
-mesh sizes fixed. Compare chamber metrics and on-axis errors. Do not treat one
-successful solve as mesh- or domain-independent validation. The mesh-size study
-should eventually bring the relevant field metrics below 1% change, followed by
-an independent domain-size study.
-
-## Checks already run
-
-Four automated tests cover the exact Helmholtz-pair center field, the thin-pack
-limit and current reversal/superposition, invalid geometry, and the generated
-mesh partition. Mesh checks verify region areas, unique coordinates, nonzero
-triangle areas, one connected mesh, one physical group per surface, and exact
-agreement between exterior mesh edges and the AXIS/FAR_BOUNDARY tags.
-
-The default mesh contains **2,494 nodes and 4,811 triangles** with no duplicate
-interface nodes or untagged exterior edges. These checks do not validate FEM
-accuracy; that remains an Ubuntu task.
-
-## References for implementation APIs
-
-- [Gmsh reference manual](https://gmsh.info/doc/texinfo/gmsh.html)
-- [DOLFINx 0.10 Gmsh importer](https://docs.fenicsproject.org/dolfinx/v0.10.0.post3/python/generated/dolfinx.io.gmsh.html)
-- [DOLFINx 0.10 PETSc LinearProblem](https://docs.fenicsproject.org/dolfinx/v0.10.0.post3/python/generated/dolfinx.fem.petsc.html)
+Tests cover geometry topology, independent loop/pack formulas, field
+reconstruction and regular axis limits, exit weighting, objective definitions,
+sweep plans, independent domain changes, failure preservation/retries, study
+completion criteria, and rendering with explicitly synthetic field data.
+These tests do not substitute for running the new FEM exports and convergence
+study on Ubuntu. No RF or plasma model has been introduced.

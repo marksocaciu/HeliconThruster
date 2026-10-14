@@ -1,0 +1,6 @@
+{
+  "parameters": [
+    {"coil": "coil_1", "field": "ampere_turns", "values": [1700, 1898, 2100]},
+    {"coil": "coil_2", "field": "ampere_turns", "values": [1700, 1898, 2100]}
+  ]
+}

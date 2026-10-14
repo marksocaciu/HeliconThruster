@@ -1,0 +1,6 @@
+{
+  "parameters": [
+    {"coil": "coil_1", "field": "z_center", "values": [-0.14, -0.12, -0.10]},
+    {"coil": "coil_2", "field": "z_center", "values": [-0.02, 0.0, 0.02]}
+  ]
+}

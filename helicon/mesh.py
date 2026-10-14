@@ -85,6 +85,7 @@ def generate(c, out, scale=1.0, gui=False):
             raise RuntimeError('Subdomain areas do not cover the outer domain')
         element_ids = g.model.mesh.getElements(2)[1]
         report = {'coordinate_mapping':'Gmsh x = r, Gmsh y = axial z, Gmsh z = 0; SI metres',
+                  'gmsh_version':g.__version__,
                   'physical_groups':groups,'areas_m2':areas,
                   'nodes':len(g.model.mesh.getNodes()[0]),
                   'triangles':sum(len(ids) for ids in element_ids), 'mesh_scale':scale}
