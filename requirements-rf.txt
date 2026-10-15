@@ -1,0 +1,7 @@
+# Mesh preparation, material checks, and report rendering on Mac/Linux:
+numpy>=2,<3
+gmsh>=4.14,<5
+matplotlib>=3.9,<4
+# RF SOLVE additionally requires a compatible complex DOLFINx 0.10/0.11 stack:
+# complex PETSc/petsc4py, mpi4py, Basix, UFL, FFCx, HDF5; parallel LU for MPI.
+# Install that stack together using its supported distribution, not this pip file.

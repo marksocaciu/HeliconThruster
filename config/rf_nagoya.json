@@ -1,0 +1,56 @@
+{
+  "model": "rf_gap_3d_v1",
+  "frequency_Hz": 27120000.0,
+  "voltage_peak_V": 1.0,
+  "material_case": "vacuum",
+  "chamber": {
+    "radius_m": 0.03,
+    "length_m": 0.12,
+    "z_start_m": -0.12,
+    "wall_thickness_m": 0.003
+  },
+  "antenna": {
+    "inner_radius_m": 0.038,
+    "radial_thickness_m": 0.002,
+    "ring_width_m": 0.006,
+    "leg_angle_rad": 0.16,
+    "gap_m": 0.003
+  },
+  "domain": {
+    "half_width_m": 0.12,
+    "z_min_m": -0.24,
+    "z_max_m": 0.12,
+    "pml_thickness_m": 0.2,
+    "pml_strength": 100.0
+  },
+  "mesh": {
+    "bulk_m": 0.035,
+    "plasma_m": 0.008,
+    "wall_m": 0.003,
+    "antenna_m": 0.003,
+    "gap_m": 0.0015
+  },
+  "dielectric": {
+    "wall_epsilon_r": 3.8,
+    "wall_loss_tangent": 0.0,
+    "test_epsilon_r": 4.0,
+    "test_loss_tangent": 0.1
+  },
+  "plasma": {
+    "electron_density_m3": 2.642694491179898e+18,
+    "electron_temperature_eV": 4.919081853586249,
+    "neutral_density_m3": 2.9910705837531943e+19,
+    "collision_frequency_Hz": 20000000.0,
+    "uniform_B_T": [
+      0.0,
+      0.0,
+      0.014
+    ]
+  },
+  "solver": {
+    "degree": 1,
+    "power_balance_tolerance": 0.001,
+    "relative_residual_tolerance": 1e-08
+  },
+  "description": "Numerical starter, vacuum first. PEC Nagoya-style rings and rails; ideal gap-sheet voltage source, no matching network. RF dimensions and collision frequency are assumptions, not a complete paper reproduction. Mesh and PML require convergence."
+}
