@@ -68,7 +68,11 @@ def solve(build,out,b_map=None):
         try: gmsh_module()
         except SystemExit as exc: raise RuntimeError(str(exc)) from exc
         from dolfinx.io import gmsh as gmshio
-        data=gmshio.read_from_msh(out/'rf.msh',comm,rank=0,gdim=3,partitioner=dmesh.create_cell_partitioner(dmesh.GhostMode.shared_facet))
+        # Each facet of this conforming tetrahedral mesh meets at most two cells.
+        # DOLFINx 0.11 requires this bound explicitly when creating a partitioner.
+        partitioner=dmesh.create_cell_partitioner(
+            dmesh.GhostMode.shared_facet, max_facet_to_cell_links=2)
+        data=gmshio.read_from_msh(out/'rf.msh',comm,rank=0,gdim=3,partitioner=partitioner)
         domain,ct,ft=data.mesh,data.cell_tags,data.facet_tags
         if ct is None or ft is None: raise ValueError('RF mesh must contain cell and face tags')
         tdim=domain.topology.dim; domain.topology.create_connectivity(tdim-1,tdim)
