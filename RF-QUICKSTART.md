@@ -41,3 +41,11 @@ physical interpretation even if all numerical checks pass.
 Local verification: 35 standard tests passed; an additional FFCx test generated
 complex code for both element orders. The PDE/MPI integration test was not run
 on the Mac because DOLFINx/PETSc are absent. No RF field results are claimed.
+## Couple RF absorption back to the plasma state
+
+The new `helicon.rf.coupled` driver iterates plasma RF absorption and the global
+argon model at a fixed accepted power at the antenna gap. See
+[`docs/rf-coupling.md`](docs/rf-coupling.md) for preparation and commands.
+The existing saved vacuum solve has failed its passivity/power-sign checks, so
+fix and revalidate those before expecting the coupled driver to proceed; it
+stops on failed RF checks by design.
