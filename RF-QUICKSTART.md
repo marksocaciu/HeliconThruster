@@ -25,6 +25,10 @@ python3 -m helicon.rf.report --run runs/rf-vacuum-solution
 Use a NEW output directory each time. Open its `report.html` or ParaView
 `fields.xdmf`. The runtime must have complex DOLFINx and complex PETSc; a pip
 install of requirements-rf.txt does not provide that compiled solver stack.
+On Debian/Ubuntu the RF code selects `/usr/lib/petscdir/petsc-complex`
+automatically when present. Set `HELICON_RF_PETSC_DIR` on an RF command to
+select a different complex PETSc installation. This does not affect the
+magnetostatic solver.
 
 Run the opt-in integration check in that environment:
 

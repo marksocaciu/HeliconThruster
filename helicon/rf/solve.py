@@ -5,6 +5,7 @@ MPI is supported by distributed assembly, reductions and rank-local output.
 """
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -16,7 +17,23 @@ from .materials import cold_epsilon, AxisymmetricField, MU0, EPS_0
 from .mesh import CELL, FACE
 
 
+def _select_petsc_dir():
+    """Select the complex PETSc installation for RF before importing petsc4py."""
+    configured = os.environ.get('HELICON_RF_PETSC_DIR')
+    if configured:
+        if not Path(configured).is_dir():
+            raise RuntimeError(f'HELICON_RF_PETSC_DIR is not a directory: {configured}')
+        os.environ['PETSC_DIR'] = configured
+    elif not os.environ.get('PETSC_DIR'):
+        # Debian/Ubuntu provide parallel real and complex PETSc installations.
+        # Keep this RF-only default out of the magnetostatic runtime.
+        debian_complex = Path('/usr/lib/petscdir/petsc-complex')
+        if debian_complex.is_dir():
+            os.environ['PETSC_DIR'] = str(debian_complex)
+
+
 def runtime():
+    _select_petsc_dir()
     from mpi4py import MPI
     from petsc4py import PETSc
     import dolfinx
@@ -211,7 +228,7 @@ def main():
     a=p.parse_args()
     if a.check_runtime:
         MPI,PETSc,dolfinx=runtime()
-        if MPI.COMM_WORLD.rank==0: print(f'DOLFINx {dolfinx.__version__}, PETSc {PETSc.ScalarType}, MPI ranks={MPI.COMM_WORLD.size}')
+        if MPI.COMM_WORLD.rank==0: print(f'DOLFINx {dolfinx.__version__}, PETSc {PETSc.ScalarType}, PETSC_DIR={os.environ.get("PETSC_DIR", "(package default)")}, MPI ranks={MPI.COMM_WORLD.size}')
         return 0
     if not a.build or not a.out: p.error('--build and --out are required for a solve')
     result=solve(a.build,a.out,a.b_map)

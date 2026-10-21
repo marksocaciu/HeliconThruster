@@ -29,7 +29,6 @@ finish with `material_case` set to `plasma`.
 ## Run the coupled fixed point on complex Linux DOLFINx
 
 ```bash
-PETSC_DIR=/usr/lib/petscdir/petsc-complex \
 python3 -m helicon.rf.coupled \
   --build runs/rf-plasma/mesh \
   --out runs/rf-coupled-1062W \
@@ -43,6 +42,13 @@ explicit required input. The paper's 1250 W RF-system input and assumed 85%
 transmission efficiency give 1062.5 W as one possible delivered-power starting
 value, not a measured gap-port load or target impedance. Use another value when
 your definition of feed power differs.
+
+On Debian/Ubuntu, RF commands automatically select
+`/usr/lib/petscdir/petsc-complex` when it is installed. To select another
+complex PETSc installation, set `HELICON_RF_PETSC_DIR` for that RF command.
+This selection is local to the RF runtime and does not change the
+magnetostatic solver's real-valued environment. The Python environment must
+still provide DOLFINx built against the selected complex PETSc installation.
 
 At each plasma state, the driver first solves at the configured voltage, then
 uses linear `P ~ V²` scaling to choose the voltage that delivers the requested
