@@ -321,3 +321,15 @@ sweep plans, independent domain changes, failure preservation/retries, study
 completion criteria, and rendering with explicitly synthetic field data.
 These tests do not substitute for running the new FEM exports and convergence
 study on Ubuntu. No RF or plasma model has been introduced.
+
+## Spatial argon transport and RF feedback
+
+A new axisymmetric quasineutral drift-diffusion benchmark resolves argon
+particle transport, electron energy, current-continuity potential and sheath
+losses. Start with `python3 -m helicon.spatial --out runs/spatial-argon-100W`.
+It needs `requirements-spatial.txt`. Spatial feedback to the existing 3D RF
+solver is available through `python3 -m helicon.rf.spatial_coupled`, requiring a
+complex DOLFINx/PETSc runtime. See [the equations, commands and validation
+limits](docs/spatial-plasma.md). The supplied grid is a numerical starter;
+full spatial RF convergence has not been verified on the local real-valued
+DOLFINx installation.

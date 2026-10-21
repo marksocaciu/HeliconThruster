@@ -12,7 +12,11 @@ def cold_epsilon(frequency_Hz, density_m3, collision_frequency_Hz, B_T):
     b=np.asarray(B_T,dtype=float)
     if b.shape[-1:] != (3,) or not np.all(np.isfinite(b)):
         raise ValueError('B must have final dimension 3 and finite components')
-    if not np.isfinite([frequency_Hz,density_m3,collision_frequency_Hz]).all() or frequency_Hz<=0 or density_m3<0 or collision_frequency_Hz<0:
+    density_m3 = np.asarray(density_m3, dtype=float)
+    collision_frequency_Hz = np.asarray(collision_frequency_Hz, dtype=float)
+    if (not np.isfinite(frequency_Hz) or frequency_Hz <= 0
+            or not np.isfinite(density_m3).all() or np.any(density_m3 < 0)
+            or not np.isfinite(collision_frequency_Hz).all() or np.any(collision_frequency_Hz < 0)):
         raise ValueError('Invalid cold-plasma inputs')
     w=2*np.pi*frequency_Hz
     cross=np.zeros(b.shape[:-1]+(3,3))
@@ -20,8 +24,8 @@ def cold_epsilon(frequency_Hz, density_m3, collision_frequency_Hz, B_T):
     cross[...,1,0]=b[...,2]; cross[...,1,2]=-b[...,0]
     cross[...,2,0]=-b[...,1]; cross[...,2,1]=b[...,0]
     # (nu-iw)v + (q/m) B x v = (q/m) E; q=-e.
-    matrix=(collision_frequency_Hz-1j*w)*np.eye(3)-E_CHARGE/M_E*cross
-    sigma=density_m3*E_CHARGE**2/M_E*np.linalg.inv(matrix)
+    matrix=(collision_frequency_Hz[..., None, None]-1j*w)*np.eye(3)-E_CHARGE/M_E*cross
+    sigma=density_m3[..., None, None]*E_CHARGE**2/M_E*np.linalg.inv(matrix)
     return np.eye(3)+1j*sigma/(EPS_0*w)
 
 

@@ -1,0 +1,5 @@
+# Standalone axisymmetric fluid benchmark (no FEniCS/MPI required).
+numpy>=2,<3
+scipy>=1.14,<2
+matplotlib>=3.9,<4
+# Spatial RF coupling additionally requires the complex runtime in requirements-rf.txt.

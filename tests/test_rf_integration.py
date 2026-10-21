@@ -29,5 +29,23 @@ class RFIntegration(unittest.TestCase):
             self.assertAlmostEqual(results[1]['input_power_W']/results[0]['input_power_W'],4.,places=5)
             self.assertGreater(results[2]['material_absorption_W']['PLASMA'],0)
             self.assertGreater(results[3]['material_absorption_W']['PLASMA'],0)
+            # Exercise the actual variable-material solve and quadrature-integrated
+            # heating export when a complex runtime is available.
+            import numpy as np
+            from helicon.config import load as geometry
+            from helicon.spatial import Grid
+            from helicon.rf.spatial_maps import heating_from_rf
+            g=Grid(geometry(),3,4)
+            fields=dict(r_faces_m=g.rf,z_faces_m=g.zf,
+                        electron_density_m3=np.broadcast_to(np.linspace(1e18,2e18,3),g.shape),
+                        neutral_density_m3=np.full(g.shape,3e19),
+                        electron_temperature_eV=np.full(g.shape,4.),
+                        collision_frequency_s=np.full(g.shape,2e7))
+            state_path=root/'state.npz';np.savez(state_path,**fields)
+            mapped=solve(root/'plasma-mesh',root/'mapped-solve',plasma_map=state_path)
+            self.assertTrue(mapped['numerical_checks_passed'],mapped)
+            q,transfer=heating_from_rf(root/'mapped-solve',g,mapped['material_absorption_W']['PLASMA'])
+            self.assertLess(transfer['relative_power_error'],1e-8)
+            self.assertAlmostEqual(float(np.sum(q*g.volumes))/mapped['material_absorption_W']['PLASMA'],1.,places=8)
 
 if __name__=='__main__':unittest.main()

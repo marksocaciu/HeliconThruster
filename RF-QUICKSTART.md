@@ -53,3 +53,13 @@ argon model at a fixed accepted power at the antenna gap. See
 The existing saved vacuum solve has failed its passivity/power-sign checks, so
 fix and revalidate those before expecting the coupled driver to proceed; it
 stops on failed RF checks by design.
+
+## Spatial plasma feedback
+
+For the new 2D argon benchmark and conservative heating-map coupling, see
+[`docs/spatial-plasma.md`](docs/spatial-plasma.md). The command is
+`python3 -m helicon.rf.spatial_coupled`; the original `helicon.rf.coupled`
+continues to use the uniform 0D model. Spatial coupling updates RF density and
+collision frequency cell by cell, checks integrated power transfer, and tests
+unrelaxed field convergence. It requires the complex runtime, a uniform axial
+B field shared by both models, and a separate RF build without a saved B map.

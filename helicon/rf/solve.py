@@ -63,7 +63,7 @@ def runtime():
     return MPI,PETSc,dolfinx
 
 
-def solve(build,out,b_map=None):
+def solve(build,out,b_map=None,plasma_map=None):
     MPI,PETSc,dolfinx=runtime()
     from dolfinx import fem,mesh as dmesh,io
     from dolfinx.fem.petsc import LinearProblem, assemble_matrix
@@ -82,6 +82,10 @@ def solve(build,out,b_map=None):
             raise ValueError('Prepared RF mesh/config changed after generation')
         if b_map and c['material_case']!='plasma': raise ValueError('A B map requires the plasma material case')
         field=AxisymmetricField(b_map) if b_map else None
+        from .spatial_maps import PlasmaMap
+        profile=PlasmaMap(plasma_map) if plasma_map else None
+        if profile and c['material_case'] != 'plasma':
+            raise ValueError('Spatial plasma map requires material_case=plasma')
     except Exception as exc: error=str(exc)
     errors=comm.allgather(error)
     if any(errors): raise RuntimeError(str(errors))
@@ -93,11 +97,13 @@ def solve(build,out,b_map=None):
             shutil.copy2(build/'mesh_report.json',out/'mesh_report.json')
             shutil.copy2(build/'rf.msh',out/'rf.msh')
             if b_map: shutil.copy2(b_map,out/'background_B.npz')
+            if plasma_map: shutil.copy2(plasma_map,out/'input_plasma_fields.npz')
             if (build.parent/'input_plasma_summary.json').exists():
                 shutil.copy2(build.parent/'input_plasma_summary.json',out/'input_plasma_summary.json')
             record={'status':'running','started_utc':utc_now(),'source':snapshot(out),
                     'mesh_sha256':digest(out/'rf.msh'),'config_sha256':digest(out/'rf.json'),
-                    'magnetic_map_sha256':digest(out/'background_B.npz') if b_map else None}
+                    'magnetic_map_sha256':digest(out/'background_B.npz') if b_map else None,
+                    'plasma_map_sha256':digest(out/'input_plasma_fields.npz') if plasma_map else None}
             write_json(out/'run.json',record)
         except Exception as exc: error=str(exc)
     error=comm.bcast(error,root=0)
@@ -138,7 +144,10 @@ def solve(build,out,b_map=None):
             if case=='dielectric': assign(plasma_ids,np.eye(3)*dc['test_epsilon_r']*(1+1j*dc['test_loss_tangent']))
             if case=='plasma':
                 b=field(centers[plasma_ids]) if field else np.broadcast_to(p['uniform_B_T'],(len(plasma_ids),3))
-                assign(plasma_ids,cold_epsilon(c['frequency_Hz'],p['electron_density_m3'],p['collision_frequency_Hz'],b))
+                state=profile(centers[plasma_ids]) if profile else None
+                density=state['electron_density_m3'] if state else p['electron_density_m3']
+                collision=state['collision_frequency_s'] if state else p['collision_frequency_Hz']
+                assign(plasma_ids,cold_epsilon(c['frequency_Hz'],density,collision,b))
         except Exception as exc: material_error=str(exc)
         errors=comm.allgather(material_error)
         if any(errors): raise ValueError(str(errors))
@@ -212,7 +221,15 @@ def solve(build,out,b_map=None):
         heating=sample(.5*w*EPS_0*ufl.imag(ufl.inner(eps*solution,solution)),()).real.ravel()
         tags=np.zeros(nc,dtype=np.int32); tags[ct.indices]=ct.values
         heating[tags[:owned]==CELL['PML']]=0 # PML attenuation is not plasma heating.
-        np.savez_compressed(out/f'cells_rank{comm.rank:04d}.npz',xyz_m=centers[:owned],region=tags[:owned],E_peak_V_m=electric,B_peak_T=magnetic,q_abs_W_m3=heating)
+        # DG0 test functions integrate power on each cell using the SAME quadrature
+        # as the global material budget. Point samples above are visualization only.
+        Q=fem.functionspace(domain,('DG',0)); test=ufl.TestFunction(Q)
+        qexpr=.5*w*EPS_0*ufl.imag(ufl.inner(eps*solution,solution))
+        local_power=fem.assemble_vector(fem.form(sum(qexpr*ufl.conj(test)*dx(tag) for tag in CELL.values() if tag!=CELL['PML'])))
+        local_volume=fem.assemble_vector(fem.form(ufl.conj(test)*dx))
+        qindices=np.array([Q.dofmap.cell_dofs(i)[0] for i in range(owned)])
+        cell_power=np.real(local_power[qindices]); cell_volume=np.real(local_volume[qindices])
+        np.savez_compressed(out/f'cells_rank{comm.rank:04d}.npz',xyz_m=centers[:owned],region=tags[:owned],E_peak_V_m=electric,B_peak_T=magnetic,q_abs_W_m3=heating,cell_absorbed_power_W=cell_power,cell_volume_m3=cell_volume)
         # XDMF DG0 fields are cell samples, not the high-order solution or restart data.
         vector_space=fem.functionspace(domain,('DG',0,(3,)))
         er=fem.Function(vector_space); ei=fem.Function(vector_space)
@@ -232,7 +249,7 @@ def solve(build,out,b_map=None):
                 'scalar_type':str(PETSc.ScalarType),'linear_solver_options':options,
                 'limitations':['Ideal gap-sheet source and PEC antenna; impedance is source-model dependent, not calibrated terminal impedance.',
                     'No coax, matching network, RF coil shielding, reflector, sheath, or plume plasma.',
-                    'Fixed uniform plasma state; effective collision rate is a user assumption.',
+                    ('Spatial cellwise plasma density/collision map supplied.' if profile else 'Fixed uniform plasma state; effective collision rate is a user assumption.'),
                     'Passing algebraic/power checks does not establish mesh, PML or physical convergence.']}
         matrix.destroy(); reaction.destroy()
         comm.barrier()
@@ -249,14 +266,14 @@ def solve(build,out,b_map=None):
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--build');p.add_argument('--out');p.add_argument('--b-map');p.add_argument('--check-runtime',action='store_true')
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--build');p.add_argument('--out');p.add_argument('--b-map');p.add_argument('--plasma-map');p.add_argument('--check-runtime',action='store_true')
     a=p.parse_args()
     if a.check_runtime:
         MPI,PETSc,dolfinx=runtime()
         if MPI.COMM_WORLD.rank==0: print(f'DOLFINx {dolfinx.__version__}, PETSc {PETSc.ScalarType}, PETSC_DIR={os.environ.get("PETSC_DIR", "(package default)")}, MPI ranks={MPI.COMM_WORLD.size}')
         return 0
     if not a.build or not a.out: p.error('--build and --out are required for a solve')
-    result=solve(a.build,a.out,a.b_map)
+    result=solve(a.build,a.out,a.b_map,a.plasma_map)
     from mpi4py import MPI
     if MPI.COMM_WORLD.rank==0: print(json.dumps(result,indent=2))
     return 0 if result['numerical_checks_passed'] else 2

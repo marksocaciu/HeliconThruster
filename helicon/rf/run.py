@@ -14,7 +14,8 @@ from .config import load,validate
 def snapshot(out):
     dest=Path(out)/'source'; dest.mkdir()
     paths=list((ROOT/'helicon').rglob('*.py'))+[ROOT/'config/rf_nagoya.json']
-    for name in ('docs/rf-model.md','requirements-rf.txt'):
+    for name in ('docs/rf-model.md','requirements-rf.txt', 'docs/spatial-plasma.md',
+                 'requirements-spatial.txt', 'config/plasma_spatial_argon.json'):
         if (ROOT/name).exists(): paths.append(ROOT/name)
     hashes={}
     for path in paths:

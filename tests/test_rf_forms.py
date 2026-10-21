@@ -24,7 +24,11 @@ class ComplexForms(unittest.TestCase):
             a=bilinear(domain,u,v,eps,dx,c)
             flux=interface_flux(domain,E,c['frequency_Hz'],(0,0,-.06))*ds(14)
             heat=.5*2*np.pi*c['frequency_Hz']*EPS_0*ufl.imag(ufl.inner(eps*E,E))*dx(1)
-            header,source=ffcx.compiler.compile_ufl_objects([a,flux,heat],options=ffcx.options.get_options({'scalar_type':'complex128'}))
+            Q=ufl.FunctionSpace(domain,basix.ufl.element('DG','tetrahedron',0))
+            test=ufl.TestFunction(Q)
+            cell_power=sum(.5*2*np.pi*c['frequency_Hz']*EPS_0*ufl.imag(ufl.inner(eps*E,E))*ufl.conj(test)*dx(tag) for tag in (1,2,4,6))
+            cell_volume=ufl.conj(test)*dx
+            header,source=ffcx.compiler.compile_ufl_objects([a,flux,heat,cell_power,cell_volume],options=ffcx.options.get_options({'scalar_type':'complex128'}))
             self.assertTrue(header);self.assertTrue(source)
 
 if __name__=='__main__':unittest.main()

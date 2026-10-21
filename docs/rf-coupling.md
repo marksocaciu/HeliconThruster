@@ -81,3 +81,11 @@ Even after convergence, interpret this as a closed loop only between the
 selected lumped feed-power abstraction, the present cold-plasma RF model, and
 the uniform 0D argon model. The existing assumptions on wall/exit losses,
 argon kinetics, plasma uniformity, and collision frequency remain in force.
+
+## Spatial alternative
+
+The separate `helicon.rf.spatial_coupled` command replaces scalar feedback with
+a 2D axisymmetric argon fluid solve and conservative RF heating-map transfer.
+See [spatial-plasma.md](spatial-plasma.md) for equations, setup and the explicit
+verification limits. The scalar command documented above retains its existing
+behavior.

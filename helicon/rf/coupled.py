@@ -66,9 +66,10 @@ def _write_iteration_build(source, destination, config):
     write_json(destination/'mesh_report.json', report)
 
 
-def _run_rf(build, out, b_map, power_tolerance):
+def _run_rf(build, out, b_map, power_tolerance, plasma_map=None):
     from .solve import solve as solve_rf
-    result = solve_rf(build, out, b_map)
+    result = (solve_rf(build, out, b_map) if plasma_map is None else
+              solve_rf(build, out, b_map, plasma_map=plasma_map))
     checks = result.get('numerical_checks')
     required_checks = {
         'finite_power_values', 'positive_input_power', 'power_balance',
