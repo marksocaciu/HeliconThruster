@@ -185,7 +185,7 @@ def solve(build,out,b_map=None):
                 'input_power_W':pin,'material_absorption_W':powers,'pml_absorption_W':ppml,'outward_interface_flux_W':outgoing,
                 'power_balance_relative_error':balance,'free_equation_relative_residual':relative_residual,
                 'interface_flux_vs_pml_relative_difference':abs(outgoing-ppml)/max(abs(pin),1e-30),
-                'numerical_checks_passed':passed,'dofs':V.dofmap.index_map.size_global*V.dofmap.index_map_bs,
+                'numerical_checks_passed':bool(passed),'dofs':V.dofmap.index_map.size_global*V.dofmap.index_map_bs,
                 'mpi_ranks':comm.size,'dolfinx':dolfinx.__version__,'petsc':str(PETSc.Sys.getVersion()),
                 'scalar_type':str(PETSc.ScalarType),'linear_solver_options':options,
                 'limitations':['Ideal gap-sheet source and PEC antenna; impedance is source-model dependent, not calibrated terminal impedance.',
