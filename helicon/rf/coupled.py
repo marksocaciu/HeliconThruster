@@ -82,7 +82,7 @@ def couple(build, out, feed_power_W, plasma_config=None, geometry=None, b_map=No
     geometry = geometry_config.load(geometry) if isinstance(geometry, (str, Path)) or geometry is None else geometry
     plasma_base = global_plasma.load(plasma_config)
     h = rf_base['chamber']
-    for rf_key, plasma_key in (('radius_m', 'radius_m'), ('length_m', 'length_m')):
+    for rf_key, plasma_key in (('radius_m', 'radius'), ('length_m', 'length')):
         if abs(h[rf_key] - geometry['chamber'][plasma_key]) > 1e-12:
             raise ValueError('RF and global plasma chamber dimensions differ')
     if b_map is None and (build.parent/'background_B.npz').exists():
