@@ -70,6 +70,11 @@ def _run_rf(build, out, b_map, power_tolerance, plasma_map=None):
     from .solve import solve as solve_rf
     result = (solve_rf(build, out, b_map) if plasma_map is None else
               solve_rf(build, out, b_map, plasma_map=plasma_map))
+    return _validated_rf_result(result, out, power_tolerance)
+
+
+def _validated_rf_result(result, out, power_tolerance):
+    """Shared acceptance gate for in-process and MPI-subprocess RF results."""
     checks = result.get('numerical_checks')
     required_checks = {
         'finite_power_values', 'positive_input_power', 'power_balance',

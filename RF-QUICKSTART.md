@@ -63,3 +63,21 @@ continues to use the uniform 0D model. Spatial coupling updates RF density and
 collision frequency cell by cell, checks integrated power transfer, and tests
 unrelaxed field convergence. It requires the complex runtime, a uniform axial
 B field shared by both models, and a separate RF build without a saved B map.
+
+
+### MPI during spatial feedback
+
+Launch `python3 -m helicon.rf.spatial_coupled ... --rf-ranks 4` once. Its RF
+children run under MPI; the controller and transport algorithm remain serial.
+Do not launch multiple controllers with `mpiexec`. The optional
+`--mpi-launcher /path/to/mpiexec` must match the Python MPI installation.
+The controller may use threaded BLAS for transport; each RF child rank is
+limited to one BLAS/OpenMP thread automatically. See the spatial-model document
+for setup, rank-count checks and Ryzen 3600 starting recommendations.
+
+With the Linux configs already generated, the provided launcher starts a
+4-rank RF / 4-thread transport-BLAS run and first checks vacuum passivity:
+
+```sh
+bash tools/run_spatial_mpi.sh runs/spatial-linux-20261021-184111 4 4 medium
+```

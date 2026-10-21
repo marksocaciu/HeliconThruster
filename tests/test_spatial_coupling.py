@@ -30,7 +30,7 @@ class SpatialCoupling(unittest.TestCase):
         config = root/'spatial.json'; write_json(config, self.c)
         return build, config
 
-    def fake_rf(self, build, out, state_path, tolerance):
+    def fake_rf(self, build, out, state_path, tolerance, rf_ranks=1, mpi_launcher='mpiexec'):
         c = read_json(Path(build)/'rf.json')
         pin = 2*c['voltage_peak_V']**2
         out = Path(out); out.mkdir()

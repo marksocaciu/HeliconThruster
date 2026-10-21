@@ -1,6 +1,9 @@
 """Fixed accepted-feed-power RF / axisymmetric argon transport iteration."""
 import argparse
 import copy
+import os
+import subprocess
+import sys
 from pathlib import Path
 import shutil
 
@@ -8,7 +11,7 @@ import numpy as np
 
 from .. import spatial
 from ..config import load as load_geometry
-from ..records import write_json, digest, utc_now
+from ..records import write_json, read_json, digest, utc_now
 from .config import load as load_rf
 from .coupled import _write_iteration_build, _relative_change
 from .spatial_maps import heating_from_rf
@@ -54,19 +57,63 @@ def relax(old, target, fraction, c):
     return out
 
 
-def run_rf(build, out, state_path, tolerance):
-    # Reuse the existing strict RF boundary checks, including signs and PML flux.
-    from .coupled import _run_rf
-    # _run_rf supports a spatial map as an optional keyword and retains legacy calls.
-    return _run_rf(build, out, None, tolerance, plasma_map=state_path)
+def _mpi_command(ranks, launcher):
+    return [str(launcher), '-n', str(ranks), sys.executable,
+            '-m', 'helicon.rf.solve', '--expected-ranks', str(ranks)]
+
+
+def _launch(command, log):
+    """Launch with the controller's Python/environment and retain rank output."""
+    child_env = os.environ.copy()
+    # The serial transport controller may use threaded BLAS, but RF MPI ranks
+    # each get one thread to avoid ranks x BLAS-thread oversubscription.
+    for key in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
+                'BLIS_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS'):
+        child_env[key] = '1'
+    with Path(log).open('w') as stream:
+        try:
+            result = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT,
+                                    check=False, env=child_env)
+        except OSError as exc:
+            raise RuntimeError(f'Could not launch MPI RF command: {exc}; see {log}') from exc
+    if result.returncode != 0:
+        raise RuntimeError(f'MPI RF command exited with code {result.returncode}; see {log}')
+
+
+def run_rf(build, out, state_path, tolerance, rf_ranks=1, mpi_launcher='mpiexec'):
+    from .coupled import _run_rf, _validated_rf_result
+    if rf_ranks == 1:
+        return _run_rf(build, out, None, tolerance, plasma_map=state_path)
+    out = Path(out)
+    log = out.parent/(out.name+'.mpi.log')
+    command = _mpi_command(rf_ranks, mpi_launcher)+[
+        '--build', str(Path(build).resolve()), '--out', str(out.resolve()),
+        '--plasma-map', str(Path(state_path).resolve())]
+    _launch(command, log)
+    summary = out/'rf_summary.json'
+    if not summary.is_file():
+        raise RuntimeError(f'MPI RF command produced no summary; see {log}')
+    result = _validated_rf_result(read_json(summary), out, tolerance)
+    if result.get('mpi_ranks') != rf_ranks:
+        raise RuntimeError('RF summary rank count differs from requested MPI size; check the MPI launcher/library pairing')
+    return result
 
 
 def couple(build, out, feed_power_W, plasma_config=None, geometry=None,
-           max_iterations=20, tolerance=.01, relaxation=.4):
-    from .solve import runtime
-    MPI, _, _ = runtime()
-    if MPI.COMM_WORLD.size != 1:
-        raise RuntimeError('Spatial coupling currently requires one MPI rank')
+           max_iterations=20, tolerance=.01, relaxation=.4, rf_ranks=1,
+           mpi_launcher='mpiexec'):
+    if not isinstance(rf_ranks, int) or isinstance(rf_ranks, bool) or rf_ranks < 1:
+        raise ValueError('rf_ranks must be a positive integer')
+    for key in ('OMPI_COMM_WORLD_SIZE', 'PMI_SIZE', 'MV2_COMM_WORLD_SIZE'):
+        if int(os.environ.get(key, '1')) > 1:
+            raise RuntimeError('Launch one controller directly with --rf-ranks N; do not run the coupling driver under mpiexec')
+    if rf_ranks == 1:
+        from .solve import runtime
+        MPI, _, _ = runtime()
+        if MPI.COMM_WORLD.size != 1:
+            raise RuntimeError('Launch one coupling controller, using --rf-ranks N for parallel RF')
+    elif shutil.which(mpi_launcher) is None:
+        raise ValueError(f'MPI launcher not found: {mpi_launcher}')
     if not np.isfinite(feed_power_W) or feed_power_W <= 0:
         raise ValueError('feed_power_W must be finite and positive')
     if not isinstance(max_iterations, int) or isinstance(max_iterations, bool) or max_iterations < 2:
@@ -94,6 +141,10 @@ def couple(build, out, feed_power_W, plasma_config=None, geometry=None,
     record = {'model': 'rf_spatial_fixed_point_v1', 'status': 'running',
               'started_utc': utc_now(), 'feed_power_W': feed_power_W,
               'tolerance': tolerance, 'relaxation': relaxation, 'max_iterations': max_iterations,
+              'rf_ranks': rf_ranks, 'mpi_launcher': mpi_launcher,
+              'controller_thread_environment': {key: os.environ.get(key) for key in
+                  ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS')},
+              'rf_threads_per_rank': 1 if rf_ranks > 1 else None,
               'mesh_sha256': digest(build/'rf.msh'), 'rf_config_sha256': digest(build/'rf.json')}
     history = []
 
@@ -103,8 +154,13 @@ def couple(build, out, feed_power_W, plasma_config=None, geometry=None,
         write_json(out/'progress.json', {'status': record['status'], 'stage': stage, 'history': history})
 
     try:
-        checkpoint('seed_spatial')
+        checkpoint('runtime_preflight')
         record['source'] = snapshot(out)
+        if rf_ranks > 1:
+            # Do not initialize MPI in the serial controller before starting mpiexec.
+            _launch(_mpi_command(rf_ranks, mpi_launcher)+['--check-runtime'],
+                    out/'runtime.mpi.log')
+        checkpoint('seed_spatial')
         write_json(out/'plasma_config.json', c); write_json(out/'geometry.json', geometry)
         seed, state = spatial.solve(geometry, c)
         spatial.save(out/'seed', seed, state)
@@ -118,14 +174,16 @@ def couple(build, out, feed_power_W, plasma_config=None, geometry=None,
             checkpoint('unit_rf')
             unit_build = iteration/'unit-build'
             _write_iteration_build(build, unit_build, rf)
-            trial = run_rf(unit_build, iteration/'unit-rf', state_path, rf['solver']['power_balance_tolerance'])
+            trial = run_rf(unit_build, iteration/'unit-rf', state_path, rf['solver']['power_balance_tolerance'],
+                           rf_ranks=rf_ranks, mpi_launcher=mpi_launcher)
             voltage = rf['voltage_peak_V']*np.sqrt(feed_power_W/trial['input_power_W'])
             driven = copy.deepcopy(rf); driven['voltage_peak_V'] = float(voltage)
             driven_build = iteration/'driven-build'
             _write_iteration_build(build, driven_build, driven)
             checkpoint('driven_rf')
             rf_dir = iteration/'rf'
-            wave = run_rf(driven_build, rf_dir, state_path, rf['solver']['power_balance_tolerance'])
+            wave = run_rf(driven_build, rf_dir, state_path, rf['solver']['power_balance_tolerance'],
+                           rf_ranks=rf_ranks, mpi_launcher=mpi_launcher)
             feed_error = _relative_change(feed_power_W, wave['input_power_W'])
             if feed_error > 1e-6:
                 raise RuntimeError('Scaled RF solve does not deliver the requested accepted feed power')
@@ -183,9 +241,11 @@ def main():
     p.add_argument('--max-iterations', type=int, default=20)
     p.add_argument('--tolerance', type=float, default=.01)
     p.add_argument('--relaxation', type=float, default=.4)
+    p.add_argument('--rf-ranks', type=int, default=1, help='MPI ranks for each RF solve; controller and transport remain serial')
+    p.add_argument('--mpi-launcher', default='mpiexec', help='MPI launcher executable compatible with the Python MPI stack')
     a = p.parse_args()
     couple(a.build, a.out, a.feed_power_W, a.plasma_config, a.geometry,
-           a.max_iterations, a.tolerance, a.relaxation)
+           a.max_iterations, a.tolerance, a.relaxation, a.rf_ranks, a.mpi_launcher)
     return 0
 
 

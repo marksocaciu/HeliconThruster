@@ -266,8 +266,12 @@ def solve(build,out,b_map=None,plasma_map=None):
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--build');p.add_argument('--out');p.add_argument('--b-map');p.add_argument('--plasma-map');p.add_argument('--check-runtime',action='store_true')
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--build');p.add_argument('--out');p.add_argument('--b-map');p.add_argument('--plasma-map');p.add_argument('--check-runtime',action='store_true');p.add_argument('--expected-ranks',type=int)
     a=p.parse_args()
+    if a.expected_ranks is not None:
+        MPI,_,_=runtime()
+        if a.expected_ranks < 1 or MPI.COMM_WORLD.size != a.expected_ranks:
+            raise RuntimeError(f'Expected {a.expected_ranks} MPI ranks, got {MPI.COMM_WORLD.size}; check launcher/library pairing')
     if a.check_runtime:
         MPI,PETSc,dolfinx=runtime()
         if MPI.COMM_WORLD.rank==0: print(f'DOLFINx {dolfinx.__version__}, PETSc {PETSc.ScalarType}, PETSC_DIR={os.environ.get("PETSC_DIR", "(package default)")}, MPI ranks={MPI.COMM_WORLD.size}')

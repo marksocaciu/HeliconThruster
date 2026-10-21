@@ -218,3 +218,70 @@ be reused or bypassed to obtain a coupled answer.
 
 These motivate the hierarchy and closures; this implementation does not claim
 to reproduce either a commercial plasma solver or the cited helicon model.
+
+
+## Parallel RF inside a serial transport controller
+
+The spatial coupling command now accepts `--rf-ranks N` (default 1) and
+`--mpi-launcher PATH` (default `mpiexec`). Launch the controller ONCE with
+Python; do not place `mpiexec` in front of `helicon.rf.spatial_coupled`.
+For N > 1, it starts a new MPI job for each unit-voltage and driven RF solve,
+using the controller's exact Python executable and inherited complex-runtime
+environment. The controller does not initialize MPI before launching these
+jobs. Rank counts are checked in preflight and in each RF summary to catch
+launcher/library mismatches. Rank output is retained in `*.mpi.log` files.
+The same numerical power/passivity checks apply to serial and parallel RF.
+Nonzero child exits, missing summaries and mismatched rank counts stop the run.
+
+For the Ryzen 3600 (6 physical cores / 12 logical threads) and 32 GB RAM, start
+with 4 RF ranks and compare wall time and memory with 6 ranks. This is a starting
+configuration, not a measured optimum. Avoid running medium/fine/outer cases
+concurrently until peak memory is known. MUMPS or SuperLU_DIST must be available
+in the complex PETSc installation. MPI changes neither the equations nor the
+required mesh resolution, and a failed serial RF power check remains a failure.
+
+The spatial nonlinear solver is still serial at the algorithm level. Its dense
+linear algebra can use threaded BLAS/LAPACK where the installed backend supports
+it. Set thread limits BEFORE Python starts, for example:
+
+```sh
+export OMP_NUM_THREADS=4
+export OPENBLAS_NUM_THREADS=4
+export MKL_NUM_THREADS=4
+python3 -m helicon.rf.spatial_coupled ... --rf-ranks 4
+```
+
+The MPI launcher explicitly sets BLAS/OpenMP limits to 1 for each RF child rank,
+while leaving the controller's limits unchanged. This permits threaded transport
+linear algebra without accidentally using 4 RF ranks times 4 BLAS threads.
+Threading does not parallelize the Python chemistry/Jacobian assembly and does
+not remove the 512-cell dense-solver limit. Test 1, 2, 4 and 6 BLAS threads on the
+same transport case; small dense systems can be faster with fewer threads.
+
+A genuinely distributed 2D transport solver remains future work: partition the
+FV mesh and residual/Jacobian assembly, add halo exchanges and replace dense
+bounded least-squares with a distributed sparse nonlinear solver. PETSc SNES is
+a candidate; positivity, the 1–7 eV chemistry interval, gauge handling and the
+conservation acceptance checks must survive that change. Numerical agreement
+between 1, 2, 4 and 6 ranks is required before using it for larger meshes/server
+runs. No transport MPI scaling or complete coupled MPI field solve has been
+verified on the local real-valued runtime.
+
+For the previously generated Linux medium/fine/outer configuration directory,
+`tools/run_spatial_mpi.sh` supplies a Debian/Ubuntu launcher:
+
+```sh
+bash tools/run_spatial_mpi.sh runs/spatial-linux-20261021-184111 4 4 medium
+```
+
+Arguments are run root, RF ranks, transport BLAS threads, and case. It checks
+the complex runtime, prepares/reuses a matching mesh, runs a vacuum MPI check,
+and starts one spatial coupling controller. A failed vacuum check stops the
+script. Existing completed outputs are retained in timestamped directories.
+Set `HELICON_FEED_POWER_W` to override the illustrative 133.33 W accepted feed.
+`HELICON_PYTHON` and `HELICON_MPIEXEC` select a compatible interpreter/launcher;
+the default interpreter is `/usr/bin/python3`. This helper is specific to the
+Debian/Ubuntu complex-path setup documented above. Threaded transport BLAS
+still depends on the installed backend. The script is syntax-checked and its
+MPI controller is covered by launch-contract tests; a full Linux parallel
+field run is still required to establish performance and serial/MPI agreement.
