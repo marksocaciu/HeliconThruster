@@ -17,6 +17,27 @@ from .materials import cold_epsilon, AxisymmetricField, MU0, EPS_0
 from .mesh import CELL, FACE
 
 
+def _power_sanity_checks(pin, powers, ppml, outgoing, balance, residual,
+                         power_tolerance, residual_tolerance):
+    """Check power signs and independent physical-domain/PML power transfer."""
+    scale = max(abs(pin), 1e-30) if np.isfinite(pin) else 1e-30
+    finite = (np.isfinite(pin) and np.isfinite(ppml) and np.isfinite(outgoing)
+              and np.isfinite(balance) and np.isfinite(residual)
+              and all(np.isfinite(value) for value in powers.values()))
+    flux_difference = abs(outgoing-ppml)/scale if finite else float('inf')
+    sign_tolerance = scale*1e-8
+    return {
+        'finite_power_values': bool(finite),
+        'positive_input_power': bool(finite and pin > 0),
+        'power_balance': bool(finite and balance < power_tolerance),
+        'free_equation_residual': bool(finite and residual < residual_tolerance),
+        'nonnegative_material_absorption': bool(finite and all(value >= -sign_tolerance for value in powers.values())),
+        'nonnegative_pml_absorption': bool(finite and ppml >= -sign_tolerance),
+        'nonnegative_outward_interface_flux': bool(finite and outgoing >= -sign_tolerance),
+        'pml_interface_flux_agreement': bool(finite and flux_difference < power_tolerance),
+    }
+
+
 def _select_petsc_dir():
     """Select the complex PETSc installation for RF before importing petsc4py."""
     configured = os.environ.get('HELICON_RF_PETSC_DIR')
@@ -174,8 +195,12 @@ def solve(build,out,b_map=None):
         outgoing=float(np.real(integral(flux*ds(FACE['PML_INTERFACE']))))
         total=sum(powers.values())+ppml
         balance=abs(pin-total)/max(abs(pin),abs(total),1e-30)
-        passed=pin>0 and balance<c['solver']['power_balance_tolerance'] and relative_residual<c['solver']['relative_residual_tolerance']
-        if any(val < -max(abs(pin),1e-30)*1e-8 for val in powers.values()): passed=False
+        power_tolerance=c['solver']['power_balance_tolerance']
+        power_scale=max(abs(pin),1e-30)
+        pml_flux_difference=abs(outgoing-ppml)/power_scale
+        checks=_power_sanity_checks(pin,powers,ppml,outgoing,balance,relative_residual,
+                                    power_tolerance,c['solver']['relative_residual_tolerance'])
+        passed=all(checks.values())
         # Portable per-rank cell data: DG interpolation avoids treating edge DOFs as point values.
         def sample(expr,shape):
             space=fem.functionspace(domain,('DG',0,shape)) if shape else fem.functionspace(domain,('DG',0))
@@ -201,8 +226,8 @@ def solve(build,out,b_map=None):
                 'ideal_gap_impedance_ohm':None if impedance is None else [float(impedance.real),float(impedance.imag)],
                 'input_power_W':pin,'material_absorption_W':powers,'pml_absorption_W':ppml,'outward_interface_flux_W':outgoing,
                 'power_balance_relative_error':balance,'free_equation_relative_residual':relative_residual,
-                'interface_flux_vs_pml_relative_difference':abs(outgoing-ppml)/max(abs(pin),1e-30),
-                'numerical_checks_passed':bool(passed),'dofs':V.dofmap.index_map.size_global*V.dofmap.index_map_bs,
+                'interface_flux_vs_pml_relative_difference':pml_flux_difference,
+                'numerical_checks':checks,'numerical_checks_passed':bool(passed),'dofs':V.dofmap.index_map.size_global*V.dofmap.index_map_bs,
                 'mpi_ranks':comm.size,'dolfinx':dolfinx.__version__,'petsc':str(PETSc.Sys.getVersion()),
                 'scalar_type':str(PETSc.ScalarType),'linear_solver_options':options,
                 'limitations':['Ideal gap-sheet source and PEC antenna; impedance is source-model dependent, not calibrated terminal impedance.',

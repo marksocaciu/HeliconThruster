@@ -34,6 +34,27 @@ def _relax_state(old, new, fraction):
     return out
 
 
+def _validated_global_state(result, label):
+    if result.get('status') != 'steady':
+        raise RuntimeError(f'{label} did not return a steady plasma state')
+    residuals = result.get('balances', {}).get('relative_residuals', {})
+    required = {'ion', 'neutral', 'total_mass', 'power'}
+    if not required <= set(residuals) or any(
+            not math.isfinite(float(residuals[key])) or abs(float(residuals[key])) > 1e-8
+            for key in required):
+        raise RuntimeError(f'{label} failed its particle/power conservation checks')
+    try:
+        metrics = result['metrics']
+        state = {key: float(metrics[key]) for key in (
+            'electron_density_m3', 'electron_temperature_eV', 'neutral_density_m3')}
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f'{label} is missing a valid density/temperature state') from exc
+    if (any(not math.isfinite(value) or value <= 0 for value in state.values())
+            or not 1.0 <= state['electron_temperature_eV'] <= 7.0):
+        raise RuntimeError(f'{label} returned nonphysical state values or Te outside 1–7 eV')
+    return state
+
+
 def _write_iteration_build(source, destination, config):
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=False)
@@ -45,13 +66,32 @@ def _write_iteration_build(source, destination, config):
     write_json(destination/'mesh_report.json', report)
 
 
-def _run_rf(build, out, b_map):
+def _run_rf(build, out, b_map, power_tolerance):
     from .solve import solve as solve_rf
     result = solve_rf(build, out, b_map)
-    if not result.get('numerical_checks_passed'):
+    checks = result.get('numerical_checks')
+    required_checks = {
+        'finite_power_values', 'positive_input_power', 'power_balance',
+        'free_equation_residual', 'nonnegative_material_absorption',
+        'nonnegative_pml_absorption', 'nonnegative_outward_interface_flux',
+        'pml_interface_flux_agreement',
+    }
+    if not isinstance(checks, dict) or not required_checks <= set(checks):
         raise RuntimeError(
-            f"RF numerical checks failed in {out}; stopping the feedback loop. "
+            f'RF run {out} lacks the required power sanity checks; update the RF solver before coupling')
+    failed_checks = sorted(name for name in required_checks if checks[name] is not True)
+    if not result.get('numerical_checks_passed') or failed_checks:
+        raise RuntimeError(
+            f"RF numerical checks failed in {out}: {', '.join(failed_checks) or 'overall check failed'}. "
             f"Inspect {out}/rf_summary.json before changing any coupling inputs.")
+    pin = float(result['input_power_W'])
+    absorbed = float(result['material_absorption_W']['PLASMA'])
+    scale = max(abs(pin), 1e-30)
+    if not math.isfinite(pin) or not math.isfinite(absorbed) or absorbed < 0:
+        raise RuntimeError(f'RF run {out} returned invalid input or plasma-absorption power')
+    if absorbed > pin + scale*power_tolerance:
+        raise RuntimeError(
+            f'RF run {out} reports plasma absorption ({absorbed:g} W) above accepted input ({pin:g} W)')
     return result
 
 
@@ -100,9 +140,25 @@ def couple(build, out, feed_power_W, plasma_config=None, geometry=None, b_map=No
         'magnetic_map_sha256': digest(b_map) if b_map else None,
         'feed_power_W': feed_power_W, 'tolerance': tolerance,
         'relaxation': relaxation, 'max_iterations': max_iterations,
+        'progress': {'stage': 'created', 'iteration': None, 'completed_iterations': 0},
     }
     write_json(out/'run.json', record)
+    history = []
+
+    def checkpoint(stage, iteration=None):
+        record['progress'] = {
+            'stage': stage, 'iteration': iteration,
+            'completed_iterations': len(history),
+        }
+        record['updated_utc'] = utc_now()
+        write_json(out/'progress.json', {
+            'status': record['status'], 'progress': record['progress'],
+            'history': history, 'updated_utc': record['updated_utc'],
+        })
+        write_json(out/'run.json', record)
+
     try:
+        checkpoint('saving_inputs')
         record['source'] = snapshot(out)
         shutil.copy2(build/'rf.msh', out/'rf.msh')
         if b_map:
@@ -110,13 +166,10 @@ def couple(build, out, feed_power_W, plasma_config=None, geometry=None, b_map=No
         write_json(out/'rf_base.json', rf_base)
         write_json(out/'plasma_base.json', plasma_base)
         write_json(out/'geometry.json', geometry)
+        checkpoint('seed_global_plasma')
         seed = global_plasma.solve(geometry, copy.deepcopy(plasma_base))
-        if seed.get('status') != 'steady':
-            raise ValueError('Coupled RF mode needs a nonzero seed plasma state')
-        state = {key: float(seed['metrics'][key]) for key in (
-            'electron_density_m3', 'electron_temperature_eV', 'neutral_density_m3')}
+        state = _validated_global_state(seed, 'Seed global plasma solve')
         previous_absorbed = None
-        history = []
         final_rf_dir = None
         final_global = None
         converged = False
@@ -131,19 +184,26 @@ def couple(build, out, feed_power_W, plasma_config=None, geometry=None, b_map=No
             unit_build = iteration/'unit-build'
             _write_iteration_build(build, unit_build, unit_cfg)
             unit_dir = iteration/'unit-voltage'
-            unit_result = _run_rf(unit_build, unit_dir, b_map)
+            checkpoint('unit_voltage_rf', index)
+            unit_result = _run_rf(unit_build, unit_dir, b_map,
+                                  rf_base['solver']['power_balance_tolerance'])
+            checkpoint('unit_voltage_rf_complete', index)
             unit_pin = float(unit_result['input_power_W'])
             if unit_pin <= 0:
                 raise RuntimeError('Unit-voltage RF solve returned nonpositive accepted feed power')
 
             # The fixed-state Maxwell problem is linear in drive voltage, so P ~ V^2.
+            checkpoint('drive_voltage_scaling', index)
             voltage = unit_voltage*math.sqrt(feed_power_W/unit_pin)
             driven_cfg = copy.deepcopy(unit_cfg)
             driven_cfg['voltage_peak_V'] = voltage
             driven_build = iteration/'driven-build'
             _write_iteration_build(build, driven_build, driven_cfg)
             rf_dir = iteration/'rf'
-            rf_result = _run_rf(driven_build, rf_dir, b_map)
+            checkpoint('driven_rf', index)
+            rf_result = _run_rf(driven_build, rf_dir, b_map,
+                                rf_base['solver']['power_balance_tolerance'])
+            checkpoint('driven_rf_complete', index)
             accepted = float(rf_result['input_power_W'])
             if accepted <= 0:
                 raise RuntimeError('Driven RF solve returned nonpositive accepted feed power')
@@ -156,10 +216,9 @@ def couple(build, out, feed_power_W, plasma_config=None, geometry=None, b_map=No
                 raise RuntimeError('RF solve returned no positive plasma-absorbed power')
             plasma_cfg = copy.deepcopy(plasma_base)
             plasma_cfg['absorbed_power_W'] = absorbed
+            checkpoint('global_plasma_balance', index)
             global_result = global_plasma.solve(geometry, plasma_cfg)
-            if global_result.get('status') != 'steady':
-                raise RuntimeError('Global plasma model did not return a steady state')
-            new_state = {key: float(global_result['metrics'][key]) for key in state}
+            new_state = _validated_global_state(global_result, 'Global plasma balance')
             state_changes = {key: _relative_change(state[key], new_state[key]) for key in state}
             absorbed_change = (None if previous_absorbed is None else
                                _relative_change(previous_absorbed, absorbed))
@@ -175,6 +234,7 @@ def couple(build, out, feed_power_W, plasma_config=None, geometry=None, b_map=No
                 'rf_run': str(rf_dir.relative_to(out)),
             }
             history.append(entry)
+            checkpoint('iteration_complete', index)
             final_rf_dir, final_global = rf_dir, global_result
             if (absorbed_change is not None and absorbed_change < tolerance
                     and max(state_changes.values()) < tolerance):
@@ -215,6 +275,9 @@ def couple(build, out, feed_power_W, plasma_config=None, geometry=None, b_map=No
         record.update(status=result['status'], finished_utc=utc_now(),
                       iteration_count=len(history),
                       coupling_summary_sha256=digest(out/'coupling_summary.json'))
+        checkpoint('converged' if converged else 'iteration_limit_reached')
+        record['status'] = result['status']
+        record['finished_utc'] = utc_now()
         write_json(out/'run.json', record)
         if not converged:
             raise RuntimeError(
@@ -222,7 +285,14 @@ def couple(build, out, feed_power_W, plasma_config=None, geometry=None, b_map=No
                 f'see {out}/coupling_summary.json')
         return result
     except Exception as exc:
-        record.update(status='failed', error=f'{type(exc).__name__}: {exc}', finished_utc=utc_now())
+        stage = record.get('progress', {}).get('stage')
+        record.update(status='failed', failed_stage=stage,
+                      error=f'{type(exc).__name__}: {exc}', finished_utc=utc_now())
+        write_json(out/'progress.json', {
+            'status': 'failed', 'failed_stage': stage,
+            'progress': record.get('progress'), 'history': history,
+            'error': record['error'], 'updated_utc': record['finished_utc'],
+        })
         write_json(out/'run.json', record)
         raise
 

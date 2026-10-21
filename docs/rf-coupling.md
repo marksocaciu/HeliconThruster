@@ -59,10 +59,23 @@ requested relative tolerance on consecutive iterations.
 
 The output includes `coupling_summary.json`, a per-iteration global state and
 RF run, and `report.html` for the converged final RF field. A failed RF check
-retains its iteration output and stops the coupling run. The first vacuum run
-currently reports negative input and PML power; until that underlying RF power
-sign problem is corrected and the vacuum, dielectric, and plasma cases pass,
-this driver will stop before producing a coupled result.
+retains its iteration output and stops the coupling run. Earlier RF runs
+exposed negative PML and interface-flux signs; the added checks reject such
+results. Resolve the underlying power-sign issue and pass the vacuum,
+dielectric, and plasma checks before using the coupled result.
+
+Each RF result is checked for finite powers, positive accepted input,
+nonnegative material/PML absorption and outward interface flux, total power
+balance, free-equation residual, and agreement between PML absorption and the
+interface flux. The coupling boundary also verifies the RF check set is
+present, plasma absorption does not exceed accepted RF input, and each global
+plasma state has finite positive densities, an in-range electron temperature,
+and closed particle and power balances. `run.json` records the current stage,
+iteration, completed-iteration count, and failed stage. Failed run artifacts
+and `progress.json` retain the latest successful iteration history and error
+stage for diagnosis. The driver records progress but does not resume a failed
+run automatically. After correcting the cause, use a new output directory for
+a clean attempt.
 
 Even after convergence, interpret this as a closed loop only between the
 selected lumped feed-power abstraction, the present cold-plasma RF model, and

@@ -158,9 +158,9 @@ is unverified until domain/thickness/strength and mesh sensitivity are checked.
 
 The Hermitian/anti-Hermitian distinction matters for a gyrotropic tensor; taking
 only componentwise imaginary diagonal entries is not sufficient. The code
-checks the free-equation residual, input power sign, material absorption signs,
-and input versus material+PML power. It also computes outward Poynting flux on
-the physical-domain/PML interface as a separate convergence diagnostic.
+checks the free-equation residual, input power sign, material and PML
+absorption signs, input versus material+PML power, and agreement between PML
+absorption and outward Poynting flux on the physical-domain/PML interface.
 
 The reaction power and volume power use the same weak operator: their agreement
 is an algebraic consistency check, not independent proof of field accuracy.

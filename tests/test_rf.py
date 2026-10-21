@@ -8,12 +8,25 @@ import unittest
 import numpy as np
 from helicon.rf.config import load,validate
 from helicon.rf.materials import cold_epsilon,dissipation_tensor,absorbed_density,AxisymmetricField
+from helicon.rf.solve import _power_sanity_checks
 from helicon.argon import E_CHARGE,M_E,EPS_0
 from helicon.rf.mesh import generate,FACE
 from helicon.mesh import gmsh_module
 
 
 class Materials(unittest.TestCase):
+    def test_power_sanity_checks_reject_negative_pml_and_flux(self):
+        good = _power_sanity_checks(10., {'PLASMA': 8.}, 2., 2., 0., 1e-10, .001, 1e-8)
+        self.assertTrue(all(good.values()))
+        bad = _power_sanity_checks(1062.5, {'PLASMA': 1134.75}, -72.25, -75.05,
+                                   0., 1e-14, .001, 1e-8)
+        self.assertFalse(bad['nonnegative_pml_absorption'])
+        self.assertFalse(bad['nonnegative_outward_interface_flux'])
+        self.assertFalse(bad['pml_interface_flux_agreement'])
+        bad_material = _power_sanity_checks(10., {'PLASMA': -0.1}, 10.1, 10.1,
+                                            0., 1e-10, .001, 1e-8)
+        self.assertFalse(bad_material['nonnegative_material_absorption'])
+
     def test_unmagnetized_drude_limit(self):
         f=27.12e6;n=2e18;nu=2e7;w=2*np.pi*f
         expected=1-n*E_CHARGE**2/(M_E*EPS_0*w*(w+1j*nu))

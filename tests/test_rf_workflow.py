@@ -5,12 +5,25 @@ import tempfile
 import unittest
 import numpy as np
 from helicon.rf.config import load
+from helicon.rf.coupled import _validated_global_state
 from helicon.rf.run import import_plasma
 from helicon.rf.report import render
 from helicon.records import write_json,digest
 
 
 class Workflow(unittest.TestCase):
+    def test_coupled_global_state_boundary_checks(self):
+        result={'status':'steady',
+                'metrics':{'electron_density_m3':1e18,'electron_temperature_eV':4.,'neutral_density_m3':2e19},
+                'balances':{'relative_residuals':{'ion':0.,'neutral':1e-12,'total_mass':0.,'power':1e-12}}}
+        self.assertEqual(_validated_global_state(result, 'fixture')['electron_temperature_eV'], 4.)
+        invalid=copy.deepcopy(result);invalid['balances']['relative_residuals']['power']=1e-3
+        with self.assertRaisesRegex(RuntimeError, 'conservation checks'):
+            _validated_global_state(invalid, 'fixture')
+        invalid=copy.deepcopy(result);invalid['metrics']['electron_temperature_eV']=8.
+        with self.assertRaisesRegex(RuntimeError, '1–7 eV'):
+            _validated_global_state(invalid, 'fixture')
+
     def test_global_state_import_checks_geometry_and_status(self):
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/'plasma.json';c=load();before=copy.deepcopy(c)
