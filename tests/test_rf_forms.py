@@ -12,7 +12,7 @@ class ComplexForms(unittest.TestCase):
         import ffcx.options
         import numpy as np
         from helicon.rf.config import load
-        from helicon.rf.forms import bilinear,interface_flux
+        from helicon.rf.forms import bilinear,interface_flux,interface_flux_traces
         from helicon.rf.materials import EPS_0
         c=load()
         domain=ufl.Mesh(basix.ufl.element('Lagrange','tetrahedron',1,shape=(3,)))
@@ -26,9 +26,11 @@ class ComplexForms(unittest.TestCase):
             heat=.5*2*np.pi*c['frequency_Hz']*EPS_0*ufl.imag(ufl.inner(eps*E,E))*dx(1)
             Q=ufl.FunctionSpace(domain,basix.ufl.element('DG','tetrahedron',0))
             test=ufl.TestFunction(Q)
+            indicator=ufl.Coefficient(Q)
+            inner,outer=interface_flux_traces(domain,E,c['frequency_Hz'],indicator)
             cell_power=sum(.5*2*np.pi*c['frequency_Hz']*EPS_0*ufl.imag(ufl.inner(eps*E,E))*ufl.conj(test)*dx(tag) for tag in (1,2,4,6))
             cell_volume=ufl.conj(test)*dx
-            header,source=ffcx.compiler.compile_ufl_objects([a,flux,heat,cell_power,cell_volume],options=ffcx.options.get_options({'scalar_type':'complex128'}))
+            header,source=ffcx.compiler.compile_ufl_objects([a,flux,heat,cell_power,cell_volume,inner*ds(14),outer*ds(14)],options=ffcx.options.get_options({'scalar_type':'complex128'}))
             self.assertTrue(header);self.assertTrue(source)
 
 if __name__=='__main__':unittest.main()

@@ -1,0 +1,83 @@
+{
+  "physical_side_W": -1.2644929112078892e-05,
+  "pml_side_W": -4.964726499285237e-05,
+  "average_W": -3.114609705246565e-05,
+  "max_tangential_E_jump": 8.493274166481612e-16,
+  "tetrahedra": 179688,
+  "interface_triangles": 948,
+  "saved_summary": {
+    "status": "checks_failed",
+    "frequency_Hz": 27120000.0,
+    "case": "vacuum",
+    "voltage_peak_V": 1.0,
+    "port_current_peak_A": [
+      -2.4326618950499985e-05,
+      0.030838438405435913
+    ],
+    "ideal_gap_impedance_ohm": [
+      -0.025579775340085605,
+      -32.42704330820726
+    ],
+    "input_power_W": -1.2163309475249992e-05,
+    "material_absorption_W": {
+      "PLASMA": 0.0,
+      "WALL": 0.0,
+      "AIR": 0.0,
+      "FEED_GAP": 0.0
+    },
+    "pml_absorption_W": -1.2163309475251683e-05,
+    "outward_interface_flux_W": -3.1146097052465636e-05,
+    "power_balance_relative_error": 1.3899817037127553e-13,
+    "free_equation_relative_residual": 3.5095346411469353e-13,
+    "interface_flux_vs_pml_relative_difference": 1.5606597543078462,
+    "numerical_checks": {
+      "finite_power_values": true,
+      "positive_input_power": false,
+      "power_balance": true,
+      "free_equation_residual": true,
+      "nonnegative_material_absorption": true,
+      "nonnegative_pml_absorption": false,
+      "nonnegative_outward_interface_flux": false,
+      "pml_interface_flux_agreement": false
+    },
+    "numerical_checks_passed": false,
+    "dofs": 223153,
+    "mpi_ranks": 1,
+    "dolfinx": "0.11.0.post0",
+    "petsc": "(3, 24, 4)",
+    "scalar_type": "<class 'numpy.complex128'>",
+    "linear_solver_options": {
+      "ksp_type": "preonly",
+      "pc_type": "lu",
+      "ksp_error_if_not_converged": true,
+      "pc_factor_mat_solver_type": "mumps"
+    },
+    "limitations": [
+      "Ideal gap-sheet source and PEC antenna; impedance is source-model dependent, not calibrated terminal impedance.",
+      "No coax, matching network, RF coil shielding, reflector, sheath, or plume plasma.",
+      "Fixed uniform plasma state; effective collision rate is a user assumption.",
+      "Passing algebraic/power checks does not establish mesh, PML or physical convergence."
+    ]
+  },
+  "frozen_field_pml_quadrature": {
+    "6": {
+      "electric_W": 1.3568140532417569e-06,
+      "magnetic_W": -1.3520123528493325e-05,
+      "net_W": -1.2163309475251568e-05
+    },
+    "12": {
+      "electric_W": 1.3567526530584645e-06,
+      "magnetic_W": -1.3547252889980552e-05,
+      "net_W": -1.2190500236922088e-05
+    },
+    "20": {
+      "electric_W": 1.3567380749446517e-06,
+      "magnetic_W": -1.3546333796384732e-05,
+      "net_W": -1.2189595721440081e-05
+    }
+  },
+  "status": "diagnostic correction verified; RF/PML solution remains unvalidated",
+  "method": "Reconstructed degree-1 affine-tetrahedron E from cell centroid E and constant curl(E)=i*omega*B; integrated each interface triangle exactly using its centroid. No Maxwell re-solve required for this diagnostic.",
+  "patch": "Use physical-side outward interface flux for the physical-domain budget; retain PML-side and legacy average diagnostics; additionally require trace agreement at the existing power tolerance. No changes to Maxwell forms, PML tensors, configuration or power signs.",
+  "tests": "Final installed-source portable suite: 61 tests, 57 passed and 4 optional tests skipped. Manufactured interface-flux regression and degree-1/degree-2 complex-form compilation passed on two MPI ranks; the same checks also passed serially on the staged implementation. The full independent 223153-DOF re-solve did not complete; no successful Maxwell/PML validation is claimed."
+}

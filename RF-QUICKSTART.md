@@ -81,3 +81,27 @@ With the Linux configs already generated, the provided launcher starts a
 ```sh
 bash tools/run_spatial_mpi.sh runs/spatial-linux-20261021-184111 4 4 medium
 ```
+
+
+### Interface diagnostic correction (2026-10-22)
+
+The clean Linux vacuum case still fails the RF checks. Its negative accepted
+power is not fixed by this update. `outward_interface_flux_W` now uses the
+physical-side trace at the physical/PML interface. The previous averaged trace
+is retained as `averaged_interface_flux_W`, and the other side is reported as
+`pml_side_interface_flux_W`. A new `interface_trace_agreement` check prevents
+this diagnostic change from hiding an unresolved jump between the traces.
+Existing tolerances and negative-power rejection remain enabled.
+
+See `validation/rf-clean-interface-investigation.json` for the saved-field
+analysis. Run the new regression in the complex Linux environment:
+
+```sh
+HELICON_FEM_DIAGNOSTICS=1 /usr/bin/python3 -m unittest discover -s tests -p 'test_rf_interface_flux.py' -v
+mpiexec -n 2 env HELICON_FEM_DIAGNOSTICS=1 /usr/bin/python3 -m unittest discover -s tests -p 'test_rf_interface_flux.py' -v
+```
+
+Reusing the unchanged prepared mesh with the updated solver is supported; use
+a NEW output directory. Expect the negative-power rejection to remain until
+the underlying open-boundary/PML solution is corrected and converged. Do not
+start coupled plasma feedback from this failed vacuum baseline.

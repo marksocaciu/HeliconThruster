@@ -1,0 +1,90 @@
+{
+  "purpose": "Investigate the negative RF powers reported on the four-rank Linux vacuum smoke run. Diagnostic only; no validated RF/PML fix is claimed.",
+  "mesh_sha256": "e0d2ca1f47e26b8020b307a51991bf0fa8eaf536ca502f6f9c362f4857fcf580",
+  "rf_forms_sha256": "c6927d6322073ca49a0be43d3776586c28f857486f324a061eec49e7bedaf4de",
+  "mesh_tetrahedra": 23229,
+  "dofs": 30813,
+  "calculation": "Native DOLFINx 0.11 complex FEM assembly; identical weak form, feed trace and boundary constraints; serial SciPy SuperLU solve instead of complex PETSc/MUMPS. Original Gmsh connectivity and physical tags retained via array import.",
+  "agreement": "At strength 100, accepted power agrees with the supplied four-rank Linux result to better than 2e-15 W.",
+  "cases": [
+    {
+      "variant": "existing_imaginary_quadratic_stretch",
+      "pml_strength": 100.0,
+      "accepted_power_W": -8.381727449817418e-05,
+      "pml_absorption_W": -8.381727449817681e-05,
+      "outward_interface_flux_W": -8.846067562837434e-05,
+      "free_equation_relative_residual": 1.4189364889061176e-13,
+      "interface_flux_vs_pml_relative_difference": 0.055399094733134965,
+      "power_signs_positive": false,
+      "passes_existing_acceptance_checks": false
+    },
+    {
+      "variant": "existing_imaginary_quadratic_stretch",
+      "pml_strength": 10.0,
+      "accepted_power_W": -5.360478639065934e-06,
+      "pml_absorption_W": -5.360478639064457e-06,
+      "outward_interface_flux_W": -9.460596974652114e-06,
+      "free_equation_relative_residual": 1.410844542610185e-13,
+      "interface_flux_vs_pml_relative_difference": 0.7648791482363047,
+      "power_signs_positive": false,
+      "passes_existing_acceptance_checks": false
+    },
+    {
+      "variant": "existing_imaginary_quadratic_stretch",
+      "pml_strength": 1.0,
+      "accepted_power_W": 1.3881096632515611e-05,
+      "pml_absorption_W": 1.3881096632515694e-05,
+      "outward_interface_flux_W": 1.2348917815212541e-05,
+      "free_equation_relative_residual": 1.3607911340550592e-13,
+      "interface_flux_vs_pml_relative_difference": 0.11037880204033151,
+      "power_signs_positive": true,
+      "passes_existing_acceptance_checks": false
+    },
+    {
+      "variant": "existing_imaginary_quadratic_stretch",
+      "pml_strength": 3.0,
+      "accepted_power_W": 1.6040109640117283e-05,
+      "pml_absorption_W": 1.6040109640117615e-05,
+      "outward_interface_flux_W": 1.313397831847152e-05,
+      "free_equation_relative_residual": 1.6886949955352114e-13,
+      "interface_flux_vs_pml_relative_difference": 0.1811790185260134,
+      "power_signs_positive": true,
+      "passes_existing_acceptance_checks": false
+    },
+    {
+      "variant": "experimental_equal_real_imaginary_quadratic_stretch",
+      "pml_strength": 1.0,
+      "accepted_power_W": 6.709646881840188e-06,
+      "pml_absorption_W": 6.709646881840225e-06,
+      "outward_interface_flux_W": 5.7533066592484595e-06,
+      "free_equation_relative_residual": 1.343852618153062e-13,
+      "interface_flux_vs_pml_relative_difference": 0.14253212418378108,
+      "power_signs_positive": true,
+      "passes_existing_acceptance_checks": false
+    },
+    {
+      "variant": "experimental_equal_real_imaginary_quadratic_stretch",
+      "pml_strength": 3.0,
+      "accepted_power_W": 3.229550145082993e-06,
+      "pml_absorption_W": 3.229550145083281e-06,
+      "outward_interface_flux_W": 1.8440036746028095e-06,
+      "free_equation_relative_residual": 1.9609524748519976e-13,
+      "interface_flux_vs_pml_relative_difference": 0.42902150709440856,
+      "power_signs_positive": true,
+      "passes_existing_acceptance_checks": false
+    },
+    {
+      "variant": "experimental_equal_real_imaginary_quadratic_stretch",
+      "pml_strength": 10.0,
+      "accepted_power_W": -6.878657795783018e-06,
+      "pml_absorption_W": -6.87865779578389e-06,
+      "outward_interface_flux_W": -7.851635466797096e-06,
+      "free_equation_relative_residual": 1.441780125676689e-13,
+      "interface_flux_vs_pml_relative_difference": 0.14144876804450032,
+      "power_signs_positive": false,
+      "passes_existing_acceptance_checks": false
+    }
+  ],
+  "conclusion": "An independent linear solver reproduces the negative power. PML parameter changes alter the sign but do not pass independent interface-flux agreement. Positive powers alone are insufficient. Do not bypass the RF checks or run plasma feedback from this vacuum baseline.",
+  "scope": "Only a coarse vacuum mesh was investigated; mesh/domain/PML convergence and a validated open-boundary solution remain outstanding."
+}

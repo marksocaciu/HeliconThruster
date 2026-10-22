@@ -26,9 +26,32 @@ def bilinear(domain,u,v,eps,dx,c):
 
 
 def interface_flux(domain,E,frequency_Hz,center):
+    """Legacy averaged trace retained for diagnostic comparison only."""
     import ufl
     w=2*np.pi*frequency_Hz
     H=ufl.curl(E)/(1j*w*MU0)
     x=ufl.SpatialCoordinate(domain);n=ufl.FacetNormal(domain)
     normal=ufl.conditional(ufl.gt(ufl.real(ufl.dot(n('+'),x('+')-ufl.as_vector(center))),0),n('+'),-n('+'))
     return .5*ufl.real(ufl.dot(ufl.cross(ufl.avg(E),ufl.conj(ufl.avg(H))),normal))
+
+
+def interface_flux_traces(domain, E, frequency_Hz, physical_indicator):
+    """Outward-from-core fluxes evaluated separately on the two interface sides.
+
+    physical_indicator is DG0: one in physical cells, zero in PML cells,
+    including ghost cells. Restricting by material avoids dependence on the
+    arbitrary +/- facet orientation. H(curl) elements enforce tangential E
+    continuity, but their discrete curl (and hence H) need not be continuous.
+    The physical-side trace defines power leaving the physical domain.
+    """
+    import ufl
+    H = ufl.curl(E)/(1j*2*np.pi*frequency_Hz*MU0)
+    n = ufl.FacetNormal(domain)
+    physical, pml = 0, 0
+    for side in ('+', '-'):
+        local = .5*ufl.real(ufl.dot(
+            ufl.cross(E(side), ufl.conj(H(side))), n(side)))
+        physical += physical_indicator(side)*local
+        # PML's outward cell normal points back into the physical domain.
+        pml -= (1-physical_indicator(side))*local
+    return physical, pml

@@ -82,7 +82,7 @@ def solve(build,out,b_map=None,plasma_map=None):
     from dolfinx.fem.petsc import LinearProblem, assemble_matrix
     import basix.ufl
     import ufl
-    from .forms import bilinear,pml_tensors,interface_flux
+    from .forms import bilinear,pml_tensors,interface_flux,interface_flux_traces
     from .run import snapshot
     comm=MPI.COMM_WORLD; build=Path(build); out=Path(out)
     if b_map is None and (build.parent/'background_B.npz').exists():
@@ -213,8 +213,18 @@ def solve(build,out,b_map=None,plasma_map=None):
             powers[name]=float(np.real(integral(.5*w*EPS_0*ufl.imag(ufl.inner(eps*solution,solution))*dx(tag))))
         pml_form=(ufl.inner(invmu*ufl.curl(solution),ufl.curl(solution))-k02*ufl.inner(epml*solution,solution))*dx(CELL['PML'])
         ppml=-float(np.imag(integral(pml_form)))/(2*w*MU0)
-        flux=interface_flux(domain,solution,c['frequency_Hz'],(0,0,(d['z_min_m']+d['z_max_m'])/2))
-        outgoing=float(np.real(integral(flux*ds(FACE['PML_INTERFACE']))))
+        # Use the physical-side trace for the independent physical-domain
+        # budget. Preserve both traces and the old average as diagnostics.
+        indicator=fem.Function(fem.functionspace(domain,('DG',0)))
+        indicator.x.array[:]=1
+        for cell in ct.find(CELL['PML']):
+            indicator.x.array[indicator.function_space.dofmap.cell_dofs(int(cell))]=0
+        indicator.x.scatter_forward()
+        physical_flux,pml_flux=interface_flux_traces(domain,solution,c['frequency_Hz'],indicator)
+        outgoing=float(np.real(integral(physical_flux*ds(FACE['PML_INTERFACE']))))
+        pml_side_outgoing=float(np.real(integral(pml_flux*ds(FACE['PML_INTERFACE']))))
+        averaged_flux=interface_flux(domain,solution,c['frequency_Hz'],(0,0,(d['z_min_m']+d['z_max_m'])/2))
+        averaged_outgoing=float(np.real(integral(averaged_flux*ds(FACE['PML_INTERFACE']))))
         total=sum(powers.values())+ppml
         balance=abs(pin-total)/max(abs(pin),abs(total),1e-30)
         power_tolerance=c['solver']['power_balance_tolerance']
@@ -222,6 +232,11 @@ def solve(build,out,b_map=None,plasma_map=None):
         pml_flux_difference=abs(outgoing-ppml)/power_scale
         checks=_power_sanity_checks(pin,powers,ppml,outgoing,balance,relative_residual,
                                     power_tolerance,c['solver']['relative_residual_tolerance'])
+        # A more accurate physical-side diagnostic must not hide an unresolved
+        # jump of the discrete magnetic field across the PML interface.
+        checks['interface_trace_agreement']=bool(
+            np.isfinite(pml_side_outgoing) and
+            abs(outgoing-pml_side_outgoing)/power_scale < power_tolerance)
         passed=all(checks.values())
         # Portable per-rank cell data: DG interpolation avoids treating edge DOFs as point values.
         def sample(expr,shape):
@@ -257,6 +272,10 @@ def solve(build,out,b_map=None,plasma_map=None):
                 'input_power_W':pin,'material_absorption_W':powers,'pml_absorption_W':ppml,'outward_interface_flux_W':outgoing,
                 'power_balance_relative_error':balance,'free_equation_relative_residual':relative_residual,
                 'interface_flux_vs_pml_relative_difference':pml_flux_difference,
+                'interface_flux_definition':'physical-side trace, outward from non-PML domain',
+                'pml_side_interface_flux_W':pml_side_outgoing,
+                'averaged_interface_flux_W':averaged_outgoing,
+                'interface_trace_jump_relative_to_input':abs(outgoing-pml_side_outgoing)/power_scale,
                 'numerical_checks':checks,'numerical_checks_passed':bool(passed),'dofs':V.dofmap.index_map.size_global*V.dofmap.index_map_bs,
                 'mpi_ranks':comm.size,'dolfinx':dolfinx.__version__,'petsc':str(PETSc.Sys.getVersion()),
                 'scalar_type':str(PETSc.ScalarType),'linear_solver_options':options,
