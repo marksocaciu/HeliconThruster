@@ -43,18 +43,33 @@ class ActualCellAssembly(unittest.TestCase):
         x = ufl.SpatialCoordinate(domain)
         density = 2+x[0]+3*x[2]
         jit = {'cache_dir': os.environ['HELICON_FEM_CACHE_DIR']} if os.environ.get('HELICON_FEM_CACHE_DIR') else {}
-        volume = fem.assemble_vector(fem.form(ufl.conj(test)*dx, jit_options=jit))
-        power = fem.assemble_vector(fem.form(density*ufl.conj(test)*dx, jit_options=jit))
         owned = domain.topology.index_map(domain.topology.dim).size_local
-        cells_v = _owned_cell_integrals(volume, space, owned)
-        cells_p = _owned_cell_integrals(power, space, owned)
-        self.assertTrue(np.all(cells_v > 0))
-        self.assertAlmostEqual(comm.allreduce(float(cells_v.sum()), op=MPI.SUM), 1., places=11)
-        self.assertAlmostEqual(comm.allreduce(float(cells_p.sum()), op=MPI.SUM), 4., places=11)
-        global_power = comm.allreduce(float(fem.assemble_scalar(fem.form(density*dx, jit_options=jit))), op=MPI.SUM)
-        self.assertAlmostEqual(comm.allreduce(float(cells_p.sum()), op=MPI.SUM), global_power, places=11)
-        if comm.rank == 0:
-            print(f'Cell exports verified with DOLFINx {dolfinx.__version__}, {comm.size} MPI rank(s).')
+        # Explicit scalar types catch complex-return bugs even when the default
+        # runtime uses real arithmetic. Assembly does not require complex PETSc.
+        for dtype in (np.float64, np.complex128):
+            with self.subTest(scalar_type=np.dtype(dtype).name):
+                volume = fem.assemble_vector(fem.form(
+                    ufl.conj(test)*dx, dtype=dtype, jit_options=jit))
+                power = fem.assemble_vector(fem.form(
+                    density*ufl.conj(test)*dx, dtype=dtype, jit_options=jit))
+                cells_v = _owned_cell_integrals(volume, space, owned)
+                cells_p = _owned_cell_integrals(power, space, owned)
+                self.assertTrue(np.all(cells_v > 0))
+                total_volume = comm.allreduce(float(cells_v.sum()), op=MPI.SUM)
+                total_power = comm.allreduce(float(cells_p.sum()), op=MPI.SUM)
+                self.assertAlmostEqual(total_volume, 1., places=11)
+                self.assertAlmostEqual(total_power, 4., places=11)
+                # Keep the scalar complex through the collective, verify that
+                # the physical integral is real, then compare real values.
+                local_reference = fem.assemble_scalar(fem.form(
+                    density*dx, dtype=dtype, jit_options=jit))
+                global_reference = comm.allreduce(local_reference, op=MPI.SUM)
+                self.assertAlmostEqual(float(np.imag(global_reference)), 0., places=11)
+                self.assertAlmostEqual(total_power, float(np.real(global_reference)), places=11)
+                if comm.rank == 0:
+                    print(f'Cell exports verified with DOLFINx {dolfinx.__version__}, '
+                          f'{comm.size} MPI rank(s), {np.dtype(dtype).name}.')
+
 
 
 if __name__ == '__main__': unittest.main()
