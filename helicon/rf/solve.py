@@ -38,6 +38,19 @@ def _power_sanity_checks(pin, powers, ppml, outgoing, balance, residual,
     }
 
 
+def _owned_cell_integrals(vector, space, owned):
+    """Read DG0 volume integrals from DOLFINx 0.10 arrays or 0.11 Vectors.
+
+    These are cell-volume forms with a discontinuous basis: no shared-DOF
+    accumulation is needed. Export owned cells only, excluding ghost copies.
+    """
+    values = vector.array if hasattr(vector, 'array') else vector
+    values = np.asarray(values)
+    indices = np.array([space.dofmap.cell_dofs(i)[0] for i in range(owned)],
+                       dtype=np.int32)
+    return np.real(values[indices]).copy()
+
+
 def _select_petsc_dir():
     """Select the complex PETSc installation for RF before importing petsc4py."""
     configured = os.environ.get('HELICON_RF_PETSC_DIR')
@@ -227,8 +240,8 @@ def solve(build,out,b_map=None,plasma_map=None):
         qexpr=.5*w*EPS_0*ufl.imag(ufl.inner(eps*solution,solution))
         local_power=fem.assemble_vector(fem.form(sum(qexpr*ufl.conj(test)*dx(tag) for tag in CELL.values() if tag!=CELL['PML'])))
         local_volume=fem.assemble_vector(fem.form(ufl.conj(test)*dx))
-        qindices=np.array([Q.dofmap.cell_dofs(i)[0] for i in range(owned)])
-        cell_power=np.real(local_power[qindices]); cell_volume=np.real(local_volume[qindices])
+        cell_power=_owned_cell_integrals(local_power,Q,owned)
+        cell_volume=_owned_cell_integrals(local_volume,Q,owned)
         np.savez_compressed(out/f'cells_rank{comm.rank:04d}.npz',xyz_m=centers[:owned],region=tags[:owned],E_peak_V_m=electric,B_peak_T=magnetic,q_abs_W_m3=heating,cell_absorbed_power_W=cell_power,cell_volume_m3=cell_volume)
         # XDMF DG0 fields are cell samples, not the high-order solution or restart data.
         vector_space=fem.functionspace(domain,('DG',0,(3,)))
