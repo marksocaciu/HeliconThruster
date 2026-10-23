@@ -38,6 +38,28 @@ def _power_sanity_checks(pin, powers, ppml, outgoing, balance, residual,
     }
 
 
+def _linear_solver_options(PETSc, ranks, requested=None):
+    """Explicit choice wins over the environment; never silently replace it."""
+    backend = requested if requested is not None else os.environ.get('HELICON_RF_LU_SOLVER', 'auto')
+    if backend not in ('auto', 'mumps', 'superlu_dist'):
+        raise ValueError('RF LU solver must be auto, mumps or superlu_dist')
+    if backend == 'auto':
+        backend = next((name for name in ('mumps', 'superlu_dist')
+                        if PETSc.Sys.hasExternalPackage(name)), None)
+        if backend is None and ranks > 1:
+            raise RuntimeError('MPI RF solve needs MUMPS or SuperLU_DIST')
+    elif not PETSc.Sys.hasExternalPackage(backend):
+        raise RuntimeError(f'Requested RF LU solver {backend} is not available in this PETSc build')
+    options = {'ksp_type':'preonly', 'pc_type':'lu', 'ksp_error_if_not_converged':True}
+    if backend is not None:
+        options['pc_factor_mat_solver_type'] = backend
+    if backend == 'superlu_dist':
+        # Avoid the METIS default: the user's complex PETSc lacks METIS/ParMETis.
+        options.update(mat_superlu_dist_colperm='MMD_AT_PLUS_A',
+                       mat_superlu_dist_printstat=True)
+    return options
+
+
 def _owned_cell_integrals(vector, space, owned):
     """Read DG0 volume integrals from DOLFINx 0.10 arrays or 0.11 Vectors.
 
@@ -76,8 +98,9 @@ def runtime():
     return MPI,PETSc,dolfinx
 
 
-def solve(build,out,b_map=None,plasma_map=None):
+def solve(build,out,b_map=None,plasma_map=None,linear_solver=None):
     MPI,PETSc,dolfinx=runtime()
+    options=_linear_solver_options(PETSc,MPI.COMM_WORLD.size,linear_solver)
     from dolfinx import fem,mesh as dmesh,io
     from dolfinx.fem.petsc import LinearProblem, assemble_matrix
     import basix.ufl
@@ -184,10 +207,11 @@ def solve(build,out,b_map=None,plasma_map=None):
         drive=fem.Function(V); drive.x.array[:]=c['voltage_peak_V']*lift.x.array
         zero=fem.Function(V)
         bcs=[fem.dirichletbc(zero,fixed),fem.dirichletbc(drive,port)]
-        options={'ksp_type':'preonly','pc_type':'lu','ksp_error_if_not_converged':True}
-        if PETSc.Sys.hasExternalPackage('mumps'): options['pc_factor_mat_solver_type']='mumps'
-        elif PETSc.Sys.hasExternalPackage('superlu_dist'): options['pc_factor_mat_solver_type']='superlu_dist'
-        elif comm.size>1: raise RuntimeError('MPI RF solve needs a parallel LU backend (MUMPS or SuperLU_DIST)')
+        if comm.rank==0:
+            record.update(stage='linear_solve', linear_solver_options=options,
+                          dofs=V.dofmap.index_map.size_global*V.dofmap.index_map_bs)
+            write_json(out/'run.json',record)
+            print('RF linear solver: '+json.dumps(options)+f'; DOFs={record["dofs"]}', flush=True)
         problem=LinearProblem(form,rhs,bcs=bcs,petsc_options_prefix='helicon_rf_',petsc_options=options)
         solution=problem.solve(); solution.name='E_peak'; solution.x.scatter_forward()
         if problem.solver.getConvergedReason()<=0: raise RuntimeError('RF linear solve failed')
@@ -299,6 +323,8 @@ def solve(build,out,b_map=None,plasma_map=None):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--build');p.add_argument('--out');p.add_argument('--b-map');p.add_argument('--plasma-map');p.add_argument('--check-runtime',action='store_true');p.add_argument('--expected-ranks',type=int)
+    p.add_argument('--linear-solver',choices=('auto','mumps','superlu_dist'),
+                   help='LU backend; default HELICON_RF_LU_SOLVER or auto')
     a=p.parse_args()
     if a.expected_ranks is not None:
         MPI,_,_=runtime()
@@ -306,10 +332,12 @@ def main():
             raise RuntimeError(f'Expected {a.expected_ranks} MPI ranks, got {MPI.COMM_WORLD.size}; check launcher/library pairing')
     if a.check_runtime:
         MPI,PETSc,dolfinx=runtime()
+        selected=_linear_solver_options(PETSc,MPI.COMM_WORLD.size,a.linear_solver)
+        if MPI.COMM_WORLD.rank==0: print('RF linear solver: '+json.dumps(selected))
         if MPI.COMM_WORLD.rank==0: print(f'DOLFINx {dolfinx.__version__}, PETSc {PETSc.ScalarType}, PETSC_DIR={os.environ.get("PETSC_DIR", "(package default)")}, MPI ranks={MPI.COMM_WORLD.size}')
         return 0
     if not a.build or not a.out: p.error('--build and --out are required for a solve')
-    result=solve(a.build,a.out,a.b_map,a.plasma_map)
+    result=solve(a.build,a.out,a.b_map,a.plasma_map,linear_solver=a.linear_solver)
     from mpi4py import MPI
     if MPI.COMM_WORLD.rank==0: print(json.dumps(result,indent=2))
     return 0 if result['numerical_checks_passed'] else 2
