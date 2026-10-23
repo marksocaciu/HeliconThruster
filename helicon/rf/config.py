@@ -36,11 +36,16 @@ def validate(c):
     fields('antenna',('inner_radius_m','radial_thickness_m','ring_width_m','leg_angle_rad','gap_m'))
     mesh_required = {'bulk_m','plasma_m','wall_m','antenna_m','gap_m'}
     mesh_optional = {'interface_m','interface_band_m','interface_transition_m'}
-    if not mesh_required <= set(c['mesh']) or set(c['mesh']) - mesh_required - mesh_optional:
+    antenna_optional = {'antenna_band_m','antenna_transition_m'}
+    if set(c['mesh']) & antenna_optional and not antenna_optional <= set(c['mesh']):
+        raise ValueError('Both antenna band parameters are required together')
+    if not mesh_required <= set(c['mesh']) or set(c['mesh']) - mesh_required - mesh_optional - antenna_optional:
         raise ValueError('Unexpected mesh keys')
     if set(c['mesh']) & mesh_optional and not mesh_optional <= set(c['mesh']):
         raise ValueError('All three interface refinement parameters are required together')
     for key, value in c['mesh'].items(): number(value, 'mesh.'+key)
+    if antenna_optional <= set(c['mesh']) and c['mesh']['antenna_transition_m'] <= c['mesh']['antenna_band_m']:
+        raise ValueError('antenna_transition_m must exceed antenna_band_m')
     if mesh_optional <= set(c['mesh']):
         if c['mesh']['interface_transition_m'] <= c['mesh']['interface_band_m']:
             raise ValueError('interface_transition_m must exceed interface_band_m')

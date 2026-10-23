@@ -71,7 +71,7 @@ def generate(c,out,scale=1.):
         distance=g.model.mesh.field.add('Distance'); g.model.mesh.field.setNumbers(distance,'SurfacesList',sorted(pec|feed))
         g.model.mesh.field.setNumber(distance,'Sampling',80)
         near=g.model.mesh.field.add('Threshold'); g.model.mesh.field.setNumber(near,'InField',distance)
-        for key,val in {'SizeMin':min(size['antenna_m'],size['gap_m'])*scale,'SizeMax':size['bulk_m']*scale,'DistMin':.003,'DistMax':.014}.items():
+        for key,val in {'SizeMin':min(size['antenna_m'],size['gap_m'])*scale,'SizeMax':size['bulk_m']*scale,'DistMin':size.get('antenna_band_m',.003),'DistMax':size.get('antenna_transition_m',.014)}.items():
             g.model.mesh.field.setNumber(near,key,val)
         fields.append(near)
         # Apply distance refinement on BOTH sides of the shared plasma/wall faces.

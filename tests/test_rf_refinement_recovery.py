@@ -21,6 +21,14 @@ class RefinementRecovery(unittest.TestCase):
         del c['mesh']['interface_band_m']
         with self.assertRaises(ValueError): validate(c)
 
+    def test_antenna_band_validation(self):
+        c=load();c['mesh'].update(antenna_band_m=.001,antenna_transition_m=.005)
+        validate(c)
+        c['mesh']['antenna_transition_m']=.0005
+        with self.assertRaises(ValueError): validate(c)
+        del c['mesh']['antenna_transition_m']
+        with self.assertRaises(ValueError): validate(c)
+
     def test_rejected_candidate_preserves_last_accepted(self):
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp);save_accepted(p,{'iteration':1,'rf_run':'iterations/iteration-001/rf'})
