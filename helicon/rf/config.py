@@ -34,7 +34,18 @@ def validate(c):
         for key in c[section]:
             if key not in ('z_start_m','z_min_m','z_max_m'): number(c[section][key],key)
     fields('antenna',('inner_radius_m','radial_thickness_m','ring_width_m','leg_angle_rad','gap_m'))
-    fields('mesh',('bulk_m','plasma_m','wall_m','antenna_m','gap_m'))
+    mesh_required = {'bulk_m','plasma_m','wall_m','antenna_m','gap_m'}
+    mesh_optional = {'interface_m','interface_band_m','interface_transition_m'}
+    if not mesh_required <= set(c['mesh']) or set(c['mesh']) - mesh_required - mesh_optional:
+        raise ValueError('Unexpected mesh keys')
+    if set(c['mesh']) & mesh_optional and not mesh_optional <= set(c['mesh']):
+        raise ValueError('All three interface refinement parameters are required together')
+    for key, value in c['mesh'].items(): number(value, 'mesh.'+key)
+    if mesh_optional <= set(c['mesh']):
+        if c['mesh']['interface_transition_m'] <= c['mesh']['interface_band_m']:
+            raise ValueError('interface_transition_m must exceed interface_band_m')
+        if c['mesh']['interface_m'] > min(c['mesh']['plasma_m'], c['mesh']['wall_m']):
+            raise ValueError('interface_m must not exceed plasma_m or wall_m')
     fields('dielectric',('wall_epsilon_r','test_epsilon_r'),('wall_loss_tangent','test_loss_tangent'))
     if set(c['plasma']) != {'electron_density_m3','electron_temperature_eV','neutral_density_m3','collision_frequency_Hz','uniform_B_T'}:
         raise ValueError('Unexpected plasma keys')

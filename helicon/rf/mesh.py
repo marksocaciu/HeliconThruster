@@ -74,6 +74,22 @@ def generate(c,out,scale=1.):
         for key,val in {'SizeMin':min(size['antenna_m'],size['gap_m'])*scale,'SizeMax':size['bulk_m']*scale,'DistMin':.003,'DistMax':.014}.items():
             g.model.mesh.field.setNumber(near,key,val)
         fields.append(near)
+        # Apply distance refinement on BOTH sides of the shared plasma/wall faces.
+        # Include plasma end faces too: absorption and field gradients need not
+        # be restricted to the cylindrical side wall. Distances are physical;
+        # --scale changes target element sizes, not the band thickness.
+        refinement_surfaces = boundary(pv)
+        if 'interface_m' in size:
+            distance=g.model.mesh.field.add('Distance')
+            g.model.mesh.field.setNumbers(distance,'SurfacesList',sorted(refinement_surfaces))
+            g.model.mesh.field.setNumber(distance,'Sampling',160)
+            near=g.model.mesh.field.add('Threshold')
+            for key,val in {'InField':distance, 'SizeMin':size['interface_m']*scale,
+                            'SizeMax':size['bulk_m']*scale,
+                            'DistMin':size['interface_band_m'],
+                            'DistMax':size['interface_transition_m']}.items():
+                g.model.mesh.field.setNumber(near,key,val)
+            fields.append(near)
         f=g.model.mesh.field.add('Min'); g.model.mesh.field.setNumbers(f,'FieldsList',fields); g.model.mesh.field.setAsBackgroundMesh(f)
         for key,val in {'Mesh.MeshSizeMax':size['bulk_m']*scale,'Mesh.MeshSizeFromPoints':0,'Mesh.MeshSizeFromCurvature':0,
                         'Mesh.MeshSizeExtendFromBoundary':0,'Mesh.MshFileVersion':4.1,'Mesh.ElementOrder':1,'Mesh.Algorithm3D':1}.items():
@@ -83,6 +99,9 @@ def generate(c,out,scale=1.):
         report={'groups':groups,'volumes_m3':volumes,'metal_volume_m3':expected_metal,'mesh_scale':scale,
                 'nodes':len(g.model.mesh.getNodes()[0]),'tetrahedra':sum(len(x) for x in g.model.mesh.getElements(3)[1]),
                 'gmsh_version':g.__version__,'mesh_sha256':digest(out/'rf.msh'),'config_sha256':digest(out/'rf.json'),
+                'interface_refinement':({'surfaces':sorted(refinement_surfaces),
+                    'size_m':size['interface_m']*scale,'band_m':size['interface_band_m'],
+                    'transition_m':size['interface_transition_m']} if 'interface_m' in size else None),
                 'note':'Geometry smoke mesh only; electromagnetic and PML convergence must be checked.'}
         write_json(out/'mesh_report.json',report); return report
     finally: g.finalize()

@@ -17,6 +17,7 @@ from .. import plasma as global_plasma
 from ..records import digest, read_json, utc_now, write_json
 from .config import load as load_rf_config, validate as validate_rf_config
 from .run import snapshot
+from .checkpoints import save_accepted, save_failure, atomic_json
 
 
 def _relative_change(a, b):
@@ -56,6 +57,14 @@ def _validated_global_state(result, label):
 
 
 def _write_iteration_build(source, destination, config):
+    source = Path(source)
+    original = load_rf_config(source/'rf.json')
+    report = read_json(source/'mesh_report.json')
+    if digest(source/'rf.msh') != report['mesh_sha256'] or digest(source/'rf.json') != report['config_sha256']:
+        raise ValueError('Prepared RF mesh/config changed after generation')
+    for key in ('chamber', 'antenna', 'domain', 'mesh'):
+        if original[key] != config[key]:
+            raise ValueError(f'Iteration cannot change {key} without remeshing')
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=False)
     for name in ('rf.msh', 'mesh_report.json'):
@@ -80,7 +89,7 @@ def _validated_rf_result(result, out, power_tolerance):
         'finite_power_values', 'positive_input_power', 'power_balance',
         'free_equation_residual', 'nonnegative_material_absorption',
         'nonnegative_pml_absorption', 'nonnegative_outward_interface_flux',
-        'pml_interface_flux_agreement',
+        'pml_interface_flux_agreement', 'interface_trace_agreement',
     }
     if not isinstance(checks, dict) or not required_checks <= set(checks):
         raise RuntimeError(
@@ -175,6 +184,7 @@ def couple(build, out, feed_power_W, plasma_config=None, geometry=None, b_map=No
         checkpoint('seed_global_plasma')
         seed = global_plasma.solve(geometry, copy.deepcopy(plasma_base))
         state = _validated_global_state(seed, 'Seed global plasma solve')
+        atomic_json(out/'seed_global_summary.json', seed)
         previous_absorbed = None
         final_rf_dir = None
         final_global = None
@@ -239,6 +249,10 @@ def couple(build, out, feed_power_W, plasma_config=None, geometry=None, b_map=No
                 'absorbed_power_relative_change': absorbed_change,
                 'rf_run': str(rf_dir.relative_to(out)),
             }
+            atomic_json(iteration/'global_plasma_summary.json', global_result)
+            save_accepted(out, {**entry,
+                'global_summary': str((iteration/'global_plasma_summary.json').relative_to(out)),
+                'next_relaxed_state': _relax_state(state, new_state, relaxation)})
             history.append(entry)
             checkpoint('iteration_complete', index)
             final_rf_dir, final_global = rf_dir, global_result
@@ -290,12 +304,13 @@ def couple(build, out, feed_power_W, plasma_config=None, geometry=None, b_map=No
                 f'Coupled iteration did not converge in {max_iterations} iterations; '
                 f'see {out}/coupling_summary.json')
         return result
-    except Exception as exc:
+    except (Exception, KeyboardInterrupt) as exc:
         stage = record.get('progress', {}).get('stage')
-        record.update(status='failed', failed_stage=stage,
+        failure = save_failure(out, record, history, exc, stage)
+        record.update(status=failure['status'], failed_stage=stage,
                       error=f'{type(exc).__name__}: {exc}', finished_utc=utc_now())
         write_json(out/'progress.json', {
-            'status': 'failed', 'failed_stage': stage,
+            'status': record['status'], 'failed_stage': stage,
             'progress': record.get('progress'), 'history': history,
             'error': record['error'], 'updated_utc': record['finished_utc'],
         })
@@ -322,8 +337,8 @@ def main():
         result = couple(args.build, args.out, args.feed_power_W,
                         args.plasma_config, args.geometry, args.b_map,
                         args.max_iterations, args.tolerance, args.relaxation)
-    except Exception as exc:
-        print(f'Coupled RF run failed: {exc}', file=sys.stderr)
+    except (Exception, KeyboardInterrupt) as exc:
+        print(f'Coupled RF run stopped; inspect {args.out}/failure.json if created: {exc}', file=sys.stderr)
         return 1
     print(json.dumps({'status': result['status'], 'iteration_count': result['iteration_count'],
                       'plasma_state': result['plasma_state'],

@@ -1,4 +1,5 @@
 """Fixed accepted-feed-power RF / axisymmetric argon transport iteration."""
+from .checkpoints import save_accepted, save_failure
 import argparse
 import copy
 import os
@@ -206,6 +207,10 @@ def couple(build, out, feed_power_W, plasma_config=None, geometry=None,
                      'rf_power_balance_relative_error': wave['power_balance_relative_error'],
                      'plasma_balances': target_summary['balances'],
                      'rf_run': str(rf_dir.relative_to(out))}
+            save_accepted(out, {**entry,
+                'rf_input_plasma': str(state_path.relative_to(out)),
+                'plasma_response': str((iteration/'plasma').relative_to(out)),
+                'note': 'RF input and unrelaxed plasma response are distinct; acceptance is not fixed-point convergence.'})
             history.append(entry)
             checkpoint('iteration_complete')
             if heating_change is not None and heating_change < tolerance and max(changes.values()) < tolerance:
@@ -226,8 +231,9 @@ def couple(build, out, feed_power_W, plasma_config=None, geometry=None,
         record['status'] = 'not_converged'
         write_json(out/'coupling_summary.json', {'status': 'not_converged', 'history': history})
         raise RuntimeError(f'Spatial RF fixed point did not converge in {max_iterations} iterations')
-    except Exception as exc:
-        record.update(status='failed' if record['status'] == 'running' else record['status'],
+    except (Exception, KeyboardInterrupt) as exc:
+        failure = save_failure(out, record, history, exc, record.get('stage'))
+        record.update(status=failure['status'],
                       error=f'{type(exc).__name__}: {exc}', finished_utc=utc_now())
         checkpoint(record['stage'])
         raise
@@ -244,8 +250,12 @@ def main():
     p.add_argument('--rf-ranks', type=int, default=1, help='MPI ranks for each RF solve; controller and transport remain serial')
     p.add_argument('--mpi-launcher', default='mpiexec', help='MPI launcher executable compatible with the Python MPI stack')
     a = p.parse_args()
-    couple(a.build, a.out, a.feed_power_W, a.plasma_config, a.geometry,
-           a.max_iterations, a.tolerance, a.relaxation, a.rf_ranks, a.mpi_launcher)
+    try:
+        couple(a.build, a.out, a.feed_power_W, a.plasma_config, a.geometry,
+               a.max_iterations, a.tolerance, a.relaxation, a.rf_ranks, a.mpi_launcher)
+    except (Exception, KeyboardInterrupt) as exc:
+        print(f'Coupled RF run stopped: {exc}. Inspect {a.out}/failure.json if created.', file=sys.stderr)
+        return 1
     return 0
 
 

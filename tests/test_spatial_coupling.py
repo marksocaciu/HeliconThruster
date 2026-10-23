@@ -9,7 +9,7 @@ import numpy as np
 
 from helicon import spatial
 from helicon.config import load as geometry
-from helicon.records import write_json, read_json
+from helicon.records import write_json, read_json, digest
 from helicon.rf.config import load as rf_config
 from helicon.rf.mesh import CELL
 from helicon.rf.spatial_coupled import couple, state_change, validate_spatial
@@ -26,7 +26,7 @@ class SpatialCoupling(unittest.TestCase):
         rf = rf_config(); rf['material_case'] = 'plasma'
         write_json(build/'rf.json', rf)
         (build/'rf.msh').write_text('Synthetic mesh placeholder; never passed to FEM')
-        write_json(build/'mesh_report.json', {})
+        write_json(build/'mesh_report.json', {'mesh_sha256':digest(build/'rf.msh'), 'config_sha256':digest(build/'rf.json')})
         config = root/'spatial.json'; write_json(config, self.c)
         return build, config
 

@@ -21,7 +21,7 @@ class MPILaunchContracts(unittest.TestCase):
                     'finite_power_values', 'positive_input_power', 'power_balance',
                     'free_equation_residual', 'nonnegative_material_absorption',
                     'nonnegative_pml_absorption', 'nonnegative_outward_interface_flux',
-                    'pml_interface_flux_agreement')}}
+                    'pml_interface_flux_agreement', 'interface_trace_agreement')}}
 
     def test_mpi_results_retain_all_checks_and_validate_rank_count(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -98,6 +98,25 @@ class MPIControllerTransport(unittest.TestCase):
             self.assertIn('--check-runtime',launch.call_args.args[0])
             self.assertTrue(all(call.kwargs['rf_ranks']==4 for call in worker.call_args_list))
             self.assertEqual(read_json(root/'out/run.json')['rf_ranks'],4)
+
+    def test_later_rf_failure_retains_accepted_iteration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);build,config=self.fixture.prepare(root)
+            calls=[]
+            def rf(*args,**kwargs):
+                calls.append(1)
+                if len(calls)==3: raise RuntimeError('rejected second iteration')
+                return self.fixture.fake_rf(*args,**kwargs)
+            with patch('helicon.rf.spatial_coupled.shutil.which',return_value='/usr/bin/mpiexec'), \
+                 patch('helicon.rf.spatial_coupled._launch'), \
+                 patch('helicon.rf.spatial_coupled.run_rf',side_effect=rf):
+                with self.assertRaisesRegex(RuntimeError,'rejected second'):
+                    couple(build,root/'out',100/.75,config,rf_ranks=4,max_iterations=3)
+            failure=read_json(root/'out/failure.json')
+            self.assertEqual(failure['last_accepted']['iteration'],1)
+            self.assertEqual(len(failure['history']),1)
+            self.assertEqual(failure['failed_stage'],'unit_rf')
+            self.assertTrue((root/'out'/failure['last_accepted']['rf_input_plasma']).is_file())
 
 
 if __name__=='__main__': unittest.main()
