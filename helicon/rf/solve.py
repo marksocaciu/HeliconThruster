@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import tempfile
 import numpy as np
 from ..records import write_json, read_json, digest, utc_now
 from ..mesh import gmsh_module
@@ -38,11 +39,15 @@ def _power_sanity_checks(pin, powers, ppml, outgoing, balance, residual,
     }
 
 
-def _linear_solver_options(PETSc, ranks, requested=None):
+def _linear_solver_options(PETSc, ranks, requested=None, memory_mb=None, scratch_dir=None):
     """Explicit choice wins over the environment; never silently replace it."""
     backend = requested if requested is not None else os.environ.get('HELICON_RF_LU_SOLVER', 'auto')
-    if backend not in ('auto', 'mumps', 'superlu_dist'):
-        raise ValueError('RF LU solver must be auto, mumps or superlu_dist')
+    if backend not in ('auto', 'mumps', 'mumps_ooc', 'superlu_dist'):
+        raise ValueError('RF LU solver must be auto, mumps, mumps_ooc or superlu_dist')
+    ooc = backend == 'mumps_ooc'
+    if not ooc and (memory_mb is not None or scratch_dir is not None):
+        raise ValueError('MUMPS workspace/scratch arguments require --linear-solver mumps_ooc')
+    if ooc: backend = 'mumps'
     if backend == 'auto':
         backend = next((name for name in ('mumps', 'superlu_dist')
                         if PETSc.Sys.hasExternalPackage(name)), None)
@@ -57,6 +62,27 @@ def _linear_solver_options(PETSc, ranks, requested=None):
         # Avoid the METIS default: the user's complex PETSc lacks METIS/ParMETis.
         options.update(mat_superlu_dist_colperm='MMD_AT_PLUS_A',
                        mat_superlu_dist_printstat=True)
+    if ooc:
+        raw = memory_mb if memory_mb is not None else os.environ.get('HELICON_RF_MUMPS_MEMORY_MB', '3000')
+        try:
+            budget = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('MUMPS memory budget must be a positive integer in MB per rank') from exc
+        if isinstance(raw, bool) or str(budget) != str(raw) or not 0 < budget <= 2147483647:
+            raise ValueError('MUMPS memory budget must be a positive integer in MB per rank')
+        directory = scratch_dir if scratch_dir is not None else os.environ.get('HELICON_RF_MUMPS_SCRATCH')
+        if not directory:
+            raise ValueError('mumps_ooc requires --mumps-scratch-dir or HELICON_RF_MUMPS_SCRATCH')
+        directory = Path(directory).expanduser().resolve()
+        if not directory.is_dir():
+            raise ValueError(f'MUMPS scratch directory must already exist: {directory}')
+        if len(os.fsencode(directory)) > 240:
+            raise ValueError('MUMPS scratch directory path must be at most 240 bytes')
+        # Check actual creation permission on each rank, not merely os.access.
+        with tempfile.TemporaryFile(dir=directory) as probe:
+            probe.write(b'RF scratch check'); probe.flush()
+        options.update(mat_mumps_icntl_22=1, mat_mumps_icntl_23=budget,
+                       mat_mumps_ooc_tmpdir=str(directory), mat_mumps_icntl_4=2)
     return options
 
 
@@ -98,9 +124,10 @@ def runtime():
     return MPI,PETSc,dolfinx
 
 
-def solve(build,out,b_map=None,plasma_map=None,linear_solver=None):
+def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_mb=None,mumps_scratch_dir=None):
     MPI,PETSc,dolfinx=runtime()
-    options=_linear_solver_options(PETSc,MPI.COMM_WORLD.size,linear_solver)
+    options=_linear_solver_options(PETSc,MPI.COMM_WORLD.size,linear_solver,
+                                   mumps_memory_mb,mumps_scratch_dir)
     from dolfinx import fem,mesh as dmesh,io
     from dolfinx.fem.petsc import LinearProblem, assemble_matrix
     import basix.ufl
@@ -323,8 +350,10 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--build');p.add_argument('--out');p.add_argument('--b-map');p.add_argument('--plasma-map');p.add_argument('--check-runtime',action='store_true');p.add_argument('--expected-ranks',type=int)
-    p.add_argument('--linear-solver',choices=('auto','mumps','superlu_dist'),
+    p.add_argument('--linear-solver',choices=('auto','mumps','mumps_ooc','superlu_dist'),
                    help='LU backend; default HELICON_RF_LU_SOLVER or auto')
+    p.add_argument('--mumps-memory-mb',type=int,help='OOC workspace MB per rank (default env or 3000); not total RSS cap')
+    p.add_argument('--mumps-scratch-dir',help='Existing writable OOC scratch directory (or HELICON_RF_MUMPS_SCRATCH)')
     a=p.parse_args()
     if a.expected_ranks is not None:
         MPI,_,_=runtime()
@@ -332,12 +361,12 @@ def main():
             raise RuntimeError(f'Expected {a.expected_ranks} MPI ranks, got {MPI.COMM_WORLD.size}; check launcher/library pairing')
     if a.check_runtime:
         MPI,PETSc,dolfinx=runtime()
-        selected=_linear_solver_options(PETSc,MPI.COMM_WORLD.size,a.linear_solver)
+        selected=_linear_solver_options(PETSc,MPI.COMM_WORLD.size,a.linear_solver,a.mumps_memory_mb,a.mumps_scratch_dir)
         if MPI.COMM_WORLD.rank==0: print('RF linear solver: '+json.dumps(selected))
         if MPI.COMM_WORLD.rank==0: print(f'DOLFINx {dolfinx.__version__}, PETSc {PETSc.ScalarType}, PETSC_DIR={os.environ.get("PETSC_DIR", "(package default)")}, MPI ranks={MPI.COMM_WORLD.size}')
         return 0
     if not a.build or not a.out: p.error('--build and --out are required for a solve')
-    result=solve(a.build,a.out,a.b_map,a.plasma_map,linear_solver=a.linear_solver)
+    result=solve(a.build,a.out,a.b_map,a.plasma_map,linear_solver=a.linear_solver,mumps_memory_mb=a.mumps_memory_mb,mumps_scratch_dir=a.mumps_scratch_dir)
     from mpi4py import MPI
     if MPI.COMM_WORLD.rank==0: print(json.dumps(result,indent=2))
     return 0 if result['numerical_checks_passed'] else 2
