@@ -1,46 +1,94 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd ~/Documents/HeliconThruster
+cd "$(dirname "${BASH_SOURCE[0]}")"
 
-# ---- tunables ----------------------------------------------------------
-RANKS=${RANKS:-1}                    # 1 (safe) or 2
-BLAS_THREADS=${BLAS_THREADS:-6}      # ranks * threads <= 6 physical cores
-MEM_MB=${MEM_MB:-20000}              # MUMPS OOC workspace PER RANK (use 10000 for 2 ranks)
-ORDERING=${ORDERING:-3}              # 3=Scotch, 2=AMF, 6=QAMD, 4=PORD (old default)
-BLR_TOL=${BLR_TOL:-}                 # e.g. 1e-8; leave empty for exact LU
-# ------------------------------------------------------------------------
+# All budgets are decimal MB. The job limit excludes other system processes.
+RANKS=${RANKS:-2}
+BLAS_THREADS=${BLAS_THREADS:-1}
+MEM_MB=${MEM_MB:-10000}          # MUMPS workspace PER RANK; not total RSS
+JOB_MEMORY_MB=${JOB_MEMORY_MB:-24000}
+MEMORY_RESERVE_MB=${MEMORY_RESERVE_MB:-2000}
+MEMORY_SCOPE=${MEMORY_SCOPE:-1}  # requires Linux systemd user services + cgroup v2
+SOLVER=${SOLVER:-mumps_ooc}      # mumps_ooc, mumps, superlu_dist, gmres_asm
+ORDERING=${ORDERING:-7}          # automatic; effective ordering is in analysis JSON
+BLR_TOL=${BLR_TOL:-}
+ANALYSIS_ONLY=${ANALYSIS_ONLY:-0}
+PYTHON=${PYTHON:-/usr/bin/python3}
+CONFIG=${CONFIG:-config/rf_nagoya_smooth_pec.json}
+PREVIOUS=${PREVIOUS:-"$PWD/runs/rf-interface-1p25mm-20261026-140957/solution"}
+RUN_ROOT=${RUN_ROOT:-"$PWD/runs/rf-memory-$(date +%Y%m%d-%H%M%S)-$$"}
 
-unset PYTHONPATH PETSC_ARCH PETSC_OPTIONS
+for value in "$RANKS" "$BLAS_THREADS" "$MEM_MB" "$JOB_MEMORY_MB"; do
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo 'Ranks, threads and budgets must be positive integers' >&2; exit 2; }
+done
+[[ "$MEMORY_RESERVE_MB" =~ ^[0-9]+$ ]] || exit 2
+[[ "$MEMORY_SCOPE" =~ ^[01]$ && "$ANALYSIS_ONLY" =~ ^[01]$ ]] || exit 2
+case "$SOLVER" in mumps_ooc|mumps|superlu_dist|gmres_asm) ;; *) echo "Unknown SOLVER: $SOLVER" >&2; exit 2;; esac
+
+# The entire launcher, mesh preparation, MPI children and charged cache share a cap.
+# Explicit opt-out is useful on systems without systemd; it is never silent.
+if [[ "$MEMORY_SCOPE" == 1 && "${HELICON_MEMORY_SCOPE_ACTIVE:-0}" != 1 ]]; then
+  command -v systemd-run >/dev/null || { echo 'systemd-run is required for the memory cap; MEMORY_SCOPE=0 explicitly disables it' >&2; exit 2; }
+  export RANKS BLAS_THREADS MEM_MB JOB_MEMORY_MB MEMORY_RESERVE_MB MEMORY_SCOPE
+  export SOLVER ORDERING BLR_TOL ANALYSIS_ONLY PYTHON CONFIG PREVIOUS RUN_ROOT
+  exec systemd-run --user --scope --quiet \
+    -p "MemoryMax=$((JOB_MEMORY_MB * 1000000))" -p MemorySwapMax=0 \
+    env HELICON_MEMORY_SCOPE_ACTIVE=1 bash "$PWD/run.sh"
+fi
+if [[ "$MEMORY_SCOPE" == 0 ]]; then echo 'WARNING: OS memory cap disabled; estimates do not guarantee peak RAM' >&2; fi
+
+unset PYTHONPATH PETSC_ARCH PETSC_OPTIONS HELICON_RF_MUMPS_BLR_TOL
 export PYTHONNOUSERSITE=1
-export PETSC_DIR=/usr/lib/petscdir/petsc-complex
+export PETSC_DIR=${HELICON_RF_PETSC_DIR:-/usr/lib/petscdir/petsc-complex}
 export HELICON_RF_PETSC_DIR="$PETSC_DIR"
-export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=$BLAS_THREADS MKL_NUM_THREADS=$BLAS_THREADS
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS="$BLAS_THREADS" MKL_NUM_THREADS="$BLAS_THREADS"
+export HELICON_RF_LU_SOLVER="$SOLVER" HELICON_RF_MUMPS_MEMORY_MB="$MEM_MB"
+export HELICON_RF_MUMPS_ORDERING="$ORDERING"
+if [[ -n "$BLR_TOL" ]]; then export HELICON_RF_MUMPS_BLR_TOL="$BLR_TOL"; fi
 
-# solver settings read by solve.py
-export HELICON_RF_LU_SOLVER=mumps_ooc
-export HELICON_RF_MUMPS_MEMORY_MB=$MEM_MB
-export HELICON_RF_MUMPS_ORDERING=$ORDERING
-[ -n "$BLR_TOL" ] && export HELICON_RF_MUMPS_BLR_TOL=$BLR_TOL
-
-# ---- 1. mesh (interface refinement stays in config/rf_nagoya_smooth_pec.json) ----
-PREVIOUS="$PWD/runs/rf-interface-1p25mm-20261026-140957/solution"
-RUN_ROOT="$PWD/runs/rf-smooth-$(date +%Y%m%d-%H%M%S)"
-
-/usr/bin/python3 -m helicon.rf.run \
-  --config config/rf_nagoya_smooth_pec.json --case plasma --mesh-only \
-  --plasma-summary "$PREVIOUS/input_plasma_summary.json" \
-  --b-map "$PREVIOUS/background_B.npz" --out "$RUN_ROOT/prepared"
-
-# ---- 2. out-of-core scratch ----
-mkdir -p "$HOME/mumps-scratch"
-export HELICON_RF_MUMPS_SCRATCH="$(mktemp -d "$HOME/mumps-scratch/rf-XXXXXXXX")"
-trap 'rm -rf "$HELICON_RF_MUMPS_SCRATCH"' EXIT   # factors are ~100 GB, clean up always
-free -h; df -h "$HELICON_RF_MUMPS_SCRATCH"
-
-# ---- 3. solve (--out must not exist yet) ----
-mpiexec -n "$RANKS" --bind-to none /usr/bin/python3 -u -m helicon.rf.solve \
-  --build "$RUN_ROOT/prepared/mesh" --out "$RUN_ROOT/solution" \
-  --expected-ranks "$RANKS" \
-  --linear-solver mumps_ooc --mumps-memory-mb "$MEM_MB" \
-  --mumps-scratch-dir "$HELICON_RF_MUMPS_SCRATCH" \
+mkdir -p "$RUN_ROOT"
+finish() {
+  code=$?
+  "$PYTHON" - "$RUN_ROOT" "$code" <<'PYEND' || true
+import json, sys
+from pathlib import Path
+from helicon.rf.memory import cgroup_memory
+Path(sys.argv[1], 'launcher_status.json').write_text(json.dumps(
+    {'exit_code':int(sys.argv[2]), 'cgroup_memory':cgroup_memory()}, indent=2)+'\n')
+PYEND
+  if [[ -n "${HELICON_RF_MUMPS_SCRATCH:-}" ]]; then rm -rf -- "$HELICON_RF_MUMPS_SCRATCH"; fi
+  exit "$code"
+}
+unset HELICON_RF_MUMPS_SCRATCH
+trap finish EXIT
+if [[ "$MEMORY_SCOPE" == 1 ]]; then
+  "$PYTHON" - "$JOB_MEMORY_MB" <<'PYEND'
+import sys
+from helicon.rf.memory import cgroup_memory
+counters=cgroup_memory()
+maximum=counters.get('max')
+if maximum is None or maximum > int(sys.argv[1])*1000000 or counters.get('swap.max') != 0:
+    raise SystemExit('Expected cgroup RAM/swap limits are not active; refusing an unbounded run')
+PYEND
+fi
+if [[ -z "${BUILD:-}" ]]; then
+  "$PYTHON" -m helicon.rf.run --config "$CONFIG" --case plasma --mesh-only \
+    --plasma-summary "$PREVIOUS/input_plasma_summary.json" \
+    --b-map "$PREVIOUS/background_B.npz" --out "$RUN_ROOT/prepared" \
+    2>&1 | tee "$RUN_ROOT/prepare.log"
+  BUILD="$RUN_ROOT/prepared/mesh"
+fi
+args=(--build "$BUILD" --out "$RUN_ROOT/solution" --expected-ranks "$RANKS"
+      --linear-solver "$SOLVER" --job-memory-mb "$JOB_MEMORY_MB"
+      --memory-reserve-mb "$MEMORY_RESERVE_MB")
+if [[ "$ANALYSIS_ONLY" == 1 ]]; then args+=(--analysis-only); fi
+if [[ "$SOLVER" == mumps_ooc ]]; then
+  scratch_parent=${SCRATCH_ROOT:-"$HOME/mumps-scratch"}
+  mkdir -p "$scratch_parent"
+  export HELICON_RF_MUMPS_SCRATCH="$(mktemp -d "$scratch_parent/rf-XXXXXXXX")"
+  args+=(--mumps-memory-mb "$MEM_MB" --mumps-scratch-dir "$HELICON_RF_MUMPS_SCRATCH")
+  df -h "$HELICON_RF_MUMPS_SCRATCH"
+fi
+free -h
+mpiexec -n "$RANKS" --bind-to none "$PYTHON" -u -m helicon.rf.solve "${args[@]}" \
   2>&1 | tee "$RUN_ROOT/solve.log"

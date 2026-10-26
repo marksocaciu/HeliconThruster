@@ -42,11 +42,23 @@ def _power_sanity_checks(pin, powers, ppml, outgoing, balance, residual,
 def _linear_solver_options(PETSc, ranks, requested=None, memory_mb=None, scratch_dir=None):
     """Explicit choice wins over the environment; never silently replace it."""
     backend = requested if requested is not None else os.environ.get('HELICON_RF_LU_SOLVER', 'auto')
-    if backend not in ('auto', 'mumps', 'mumps_ooc', 'superlu_dist'):
-        raise ValueError('RF LU solver must be auto, mumps, mumps_ooc or superlu_dist')
+    if backend not in ('auto', 'mumps', 'mumps_ooc', 'superlu_dist', 'gmres_asm'):
+        raise ValueError('RF solver must be auto, mumps, mumps_ooc, superlu_dist or gmres_asm')
     ooc = backend == 'mumps_ooc'
     if not ooc and (memory_mb is not None or scratch_dir is not None):
         raise ValueError('MUMPS workspace/scratch arguments require --linear-solver mumps_ooc')
+    if backend == 'gmres_asm':
+        def integer(name, default, minimum):
+            value = int(os.environ.get(name, default))
+            if value < minimum: raise ValueError(f'{name} must be >= {minimum}')
+            return value
+        return {'ksp_type':'gmres', 'ksp_gmres_restart':integer('HELICON_RF_GMRES_RESTART',30,1),
+                'ksp_rtol':1e-9, 'ksp_atol':0.0,
+                'ksp_max_it':integer('HELICON_RF_KSP_MAX_IT',1000,1),
+                'ksp_error_if_not_converged':True,
+                'pc_type':'asm', 'pc_asm_overlap':integer('HELICON_RF_ASM_OVERLAP',1,0),
+                'sub_ksp_type':'preonly', 'sub_pc_type':'ilu',
+                'sub_pc_factor_levels':integer('HELICON_RF_ILU_LEVELS',0,0)}
     if ooc: backend = 'mumps'
     if backend == 'auto':
         backend = next((name for name in ('mumps', 'superlu_dist')
@@ -98,6 +110,34 @@ def _linear_solver_options(PETSc, ranks, requested=None, memory_mb=None, scratch
     return options
 
 
+
+def _reaction_vector(form, solution, PETSc):
+    """Unconstrained weak-form reaction; sum shared contributions to owners."""
+    import ufl
+    from dolfinx import fem
+    from dolfinx.fem.petsc import assemble_vector
+    result = assemble_vector(fem.form(ufl.action(form, solution)))
+    result.ghostUpdate(addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.REVERSE)
+    return result
+
+
+def _solve_with_options(problem, options, PETSc):
+    """Keep options alive until nested PCs and external factors are set up.
+
+    LinearProblem removes its options after KSP.setFromOptions, before lazy
+    factorization and ASM sub-KSP setup. Preserve caller database entries.
+    """
+    database = PETSc.Options(problem.solver.getOptionsPrefix())
+    previous = {key: database.getString(key) if database.hasName(key) else None for key in options}
+    try:
+        for key, value in options.items(): database[key] = value
+        problem.solver.setFromOptions()
+        return problem.solve()
+    finally:
+        for key in options:
+            if previous[key] is None: del database[key]
+            else: database[key] = previous[key]
+
 def _owned_cell_integrals(vector, space, owned):
     """Read DG0 volume integrals from DOLFINx 0.10 arrays or 0.11 Vectors.
 
@@ -136,12 +176,20 @@ def runtime():
     return MPI,PETSc,dolfinx
 
 
-def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_mb=None,mumps_scratch_dir=None):
+def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_mb=None,mumps_scratch_dir=None,
+          analysis_only=False, job_memory_mb=None, memory_reserve_mb=2000):
     MPI,PETSc,dolfinx=runtime()
     options=_linear_solver_options(PETSc,MPI.COMM_WORLD.size,linear_solver,
                                    mumps_memory_mb,mumps_scratch_dir)
     from dolfinx import fem,mesh as dmesh,io
     from dolfinx.fem.petsc import LinearProblem, assemble_matrix
+    from .memory import memory_snapshot, admission
+    if job_memory_mb is not None and (not np.isfinite(job_memory_mb) or job_memory_mb <= 0):
+        raise ValueError('job_memory_mb must be positive and finite')
+    if not np.isfinite(memory_reserve_mb) or memory_reserve_mb < 0:
+        raise ValueError('memory_reserve_mb must be nonnegative and finite')
+    if analysis_only and options.get('pc_factor_mat_solver_type') != 'mumps':
+        raise ValueError('--analysis-only requires MUMPS')
     import basix.ufl
     import ufl
     from .forms import bilinear,pml_tensors,interface_flux,interface_flux_traces
@@ -183,7 +231,15 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
         except Exception as exc: error=str(exc)
     error=comm.bcast(error,root=0)
     if error: raise RuntimeError(error)
+    def checkpoint(stage):
+        measurement = memory_snapshot(comm, stage)
+        if comm.rank == 0:
+            record.setdefault('memory', []).append(measurement)
+            record['stage'] = stage
+            write_json(out/'run.json', record)
+        return measurement
     try:
+        checkpoint('mesh_import')
         try: gmsh_module()
         except SystemExit as exc: raise RuntimeError(str(exc)) from exc
         from dolfinx.io import gmsh as gmshio
@@ -251,12 +307,60 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
                           dofs=V.dofmap.index_map.size_global*V.dofmap.index_map_bs)
             write_json(out/'run.json',record)
             print('RF linear solver: '+json.dumps(options)+f'; DOFs={record["dofs"]}', flush=True)
-        problem=LinearProblem(form,rhs,bcs=bcs,petsc_options_prefix='helicon_rf_',petsc_options=options)
-        solution=problem.solve(); solution.name='E_peak'; solution.x.scatter_forward()
-        if problem.solver.getConvergedReason()<=0: raise RuntimeError('RF linear solve failed')
-        # Recover source current from the unconstrained weak-form reaction.
-        matrix=assemble_matrix(fem.form(form)); matrix.assemble()
-        reaction=matrix.createVecLeft(); matrix.mult(solution.x.petsc_vec,reaction)
+        problem=LinearProblem(form,rhs,bcs=bcs,petsc_options_prefix='helicon_rf_',petsc_options=None)
+        analysis = None
+        if options.get('pc_factor_mat_solver_type') == 'mumps' and (analysis_only or job_memory_mb is not None):
+            # Assemble into LinearProblem's existing matrix; no second global matrix.
+            problem.A.zeroEntries()
+            assemble_matrix(problem.A, problem.a, bcs=bcs)
+            problem.A.assemble()
+            baseline = checkpoint('assembled_before_analysis')
+            from .analysis import analyze_mumps
+            analysis = analyze_mumps(problem.A, options, comm, out, PETSc)
+            analysis['admission'] = admission(analysis, baseline['sum_rank_rss_bytes'],
+                job_memory_mb, memory_reserve_mb, options.get('mat_mumps_icntl_23'))
+            if comm.rank == 0:
+                write_json(out/'solver_analysis.json', analysis)
+                print('RF symbolic analysis: '+json.dumps(analysis), flush=True)
+            checkpoint('analysis_complete')
+            if analysis_only:
+                del problem
+                result = {'status':'analysis_completed', 'analysis':analysis,
+                          'dofs':V.dofmap.index_map.size_global*V.dofmap.index_map_bs}
+                if comm.rank == 0:
+                    record.update(result, finished_utc=utc_now())
+                    write_json(out/'run.json',record)
+                return result
+            if not analysis['admission']['accepted']:
+                raise RuntimeError('Memory admission rejected before numerical factorization: '+
+                                   '; '.join(analysis['admission']['reasons']))
+        checkpoint('linear_solve')
+        solved = _solve_with_options(problem, options, PETSc)
+        reason = int(problem.solver.getConvergedReason())
+        if reason <= 0: raise RuntimeError('RF linear solve failed')
+        # Check the actual constrained system, independently of KSP's PC norm.
+        residual = problem.b.duplicate()
+        problem.A.mult(problem.x, residual)
+        residual.axpy(-1,problem.b)
+        true_relative_residual = residual.norm()/max(problem.b.norm(),1e-300)
+        residual.destroy()
+        solver_diagnostics = {'converged_reason':reason,
+            'iterations':int(problem.solver.getIterationNumber()),
+            'true_relative_residual':float(true_relative_residual)}
+        if comm.rank == 0:
+            record['solver_diagnostics'] = solver_diagnostics
+            write_json(out/'run.json',record)
+        if not np.isfinite(true_relative_residual) or true_relative_residual > c['solver']['relative_residual_tolerance']:
+            raise RuntimeError(f'RF true algebraic residual {true_relative_residual} exceeds tolerance')
+        # Own the field independently before LinearProblem releases PETSc objects.
+        solution=fem.Function(V); solution.name='E_peak'
+        solution.x.array[:]=solved.x.array; solution.x.scatter_forward()
+        del solved, problem
+        import gc
+        gc.collect()
+        checkpoint('solver_released')
+        # Assemble A_unconstrained E as a vector; retain no duplicate sparse matrix.
+        reaction=_reaction_vector(form, solution, PETSc)
         nowned=V.dofmap.index_map.size_local*V.dofmap.index_map_bs
         rlocal=reaction.array
         reaction_scalar=comm.allreduce(np.vdot(lift.x.array[:nowned],rlocal),op=MPI.SUM)
@@ -268,6 +372,9 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
         free_norm=np.sqrt(comm.allreduce(float(np.vdot(rlocal[free],rlocal[free]).real),op=MPI.SUM))
         full_norm=reaction.norm()
         relative_residual=free_norm/max(full_norm,1e-300)
+        reaction.destroy()
+        del rlocal
+        checkpoint('postprocessing')
         def integral(expr):
             return comm.allreduce(fem.assemble_scalar(fem.form(expr)),op=MPI.SUM)
         powers={}
@@ -342,11 +449,12 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
                 'numerical_checks':checks,'numerical_checks_passed':bool(passed),'dofs':V.dofmap.index_map.size_global*V.dofmap.index_map_bs,
                 'mpi_ranks':comm.size,'dolfinx':dolfinx.__version__,'petsc':str(PETSc.Sys.getVersion()),
                 'scalar_type':str(PETSc.ScalarType),'linear_solver_options':options,
+                'solver_diagnostics':solver_diagnostics, 'solver_analysis':analysis,
                 'limitations':['Ideal gap-sheet source and PEC antenna; impedance is source-model dependent, not calibrated terminal impedance.',
                     'No coax, matching network, RF coil shielding, reflector, sheath, or plume plasma.',
                     ('Spatial cellwise plasma density/collision map supplied.' if profile else 'Fixed uniform plasma state; effective collision rate is a user assumption.'),
                     'Passing algebraic/power checks does not establish mesh, PML or physical convergence.']}
-        matrix.destroy(); reaction.destroy()
+        checkpoint('export_complete')
         comm.barrier()
         if comm.rank==0:
             write_json(out/'rf_summary.json',result)
@@ -362,10 +470,13 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--build');p.add_argument('--out');p.add_argument('--b-map');p.add_argument('--plasma-map');p.add_argument('--check-runtime',action='store_true');p.add_argument('--expected-ranks',type=int)
-    p.add_argument('--linear-solver',choices=('auto','mumps','mumps_ooc','superlu_dist'),
+    p.add_argument('--linear-solver',choices=('auto','mumps','mumps_ooc','superlu_dist','gmres_asm'),
                    help='LU backend; default HELICON_RF_LU_SOLVER or auto')
     p.add_argument('--mumps-memory-mb',type=int,help='OOC workspace MB per rank (default env or 3000); not total RSS cap')
     p.add_argument('--mumps-scratch-dir',help='Existing writable OOC scratch directory (or HELICON_RF_MUMPS_SCRATCH)')
+    p.add_argument('--analysis-only',action='store_true',help='MUMPS symbolic analysis only; no factorization')
+    p.add_argument('--job-memory-mb',type=float,help='Estimated whole-job admission budget, decimal MB; not an OS cap')
+    p.add_argument('--memory-reserve-mb',type=float,default=2000,help='Headroom above assembled RSS plus MUMPS estimate')
     a=p.parse_args()
     if a.expected_ranks is not None:
         MPI,_,_=runtime()
@@ -378,9 +489,10 @@ def main():
         if MPI.COMM_WORLD.rank==0: print(f'DOLFINx {dolfinx.__version__}, PETSc {PETSc.ScalarType}, PETSC_DIR={os.environ.get("PETSC_DIR", "(package default)")}, MPI ranks={MPI.COMM_WORLD.size}')
         return 0
     if not a.build or not a.out: p.error('--build and --out are required for a solve')
-    result=solve(a.build,a.out,a.b_map,a.plasma_map,linear_solver=a.linear_solver,mumps_memory_mb=a.mumps_memory_mb,mumps_scratch_dir=a.mumps_scratch_dir)
+    result=solve(a.build,a.out,a.b_map,a.plasma_map,linear_solver=a.linear_solver,mumps_memory_mb=a.mumps_memory_mb,mumps_scratch_dir=a.mumps_scratch_dir,analysis_only=a.analysis_only,job_memory_mb=a.job_memory_mb,memory_reserve_mb=a.memory_reserve_mb)
     from mpi4py import MPI
     if MPI.COMM_WORLD.rank==0: print(json.dumps(result,indent=2))
+    if result['status'] == 'analysis_completed': return 0 if result['analysis']['admission']['accepted'] else 3
     return 0 if result['numerical_checks_passed'] else 2
 
 if __name__=='__main__':
