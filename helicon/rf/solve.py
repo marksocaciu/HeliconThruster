@@ -62,6 +62,18 @@ def _linear_solver_options(PETSc, ranks, requested=None, memory_mb=None, scratch
         # Avoid the METIS default: the user's complex PETSc lacks METIS/ParMETis.
         options.update(mat_superlu_dist_colperm='MMD_AT_PLUS_A',
                        mat_superlu_dist_printstat=True)
+    if backend == 'mumps':
+        ordering = os.environ.get('HELICON_RF_MUMPS_ORDERING')
+        if ordering:
+            if int(ordering) not in (0, 2, 3, 4, 5, 6, 7):
+                raise ValueError('HELICON_RF_MUMPS_ORDERING must be a MUMPS ICNTL(7) value')
+            options['mat_mumps_icntl_7'] = int(ordering)
+        blr_tol = os.environ.get('HELICON_RF_MUMPS_BLR_TOL')
+        if blr_tol:
+            tol = float(blr_tol)
+            if not 0 < tol < 1:
+                raise ValueError('HELICON_RF_MUMPS_BLR_TOL must be in (0, 1)')
+            options.update(mat_mumps_icntl_35=1, mat_mumps_cntl_7=tol)
     if ooc:
         raw = memory_mb if memory_mb is not None else os.environ.get('HELICON_RF_MUMPS_MEMORY_MB', '3000')
         try:
