@@ -9,6 +9,32 @@ CELL={'PLASMA':1,'WALL':2,'AIR':4,'FEED_GAP':6,'PML':7}
 FACE={'PEC_ANTENNA':11,'OUTER':12,'FEED_SHEET':13,'PML_INTERFACE':14}
 
 
+def transition_end(size, minimum, band, requested):
+    """Limit target-size slope dh/dd, extending rather than shortening bands."""
+    gradient = size.get('max_size_gradient')
+    if gradient is None:
+        return requested
+    return max(requested, band + max(0., size['bulk_m']-minimum)/gradient)
+
+
+def quality_report(g, regions):
+    import numpy as np
+    result = {}
+    for name, entities in regions.items():
+        tags = []
+        for entity in sorted(entities):
+            _, batches, _ = g.model.mesh.getElements(3, entity)
+            for batch in batches: tags.extend(batch)
+        q = np.asarray(g.model.mesh.getElementQualities(tags, 'minSICN'))
+        if not len(q) or not np.isfinite(q).all() or np.any(q <= 0):
+            raise RuntimeError(f'Invalid tetrahedra in {name}: empty, nonfinite or nonpositive minSICN')
+        result[name] = {'tetrahedra':len(q), 'minSICN_min':float(q.min()),
+                        'minSICN_p01':float(np.quantile(q,.01)),
+                        'minSICN_median':float(np.median(q)),
+                        'fraction_below_0p1':float(np.mean(q < .1))}
+    return result
+
+
 def generate(c,out,scale=1.):
     validate(c)
     if not math.isfinite(scale) or scale<=0: raise ValueError('Mesh scale must be positive')
@@ -68,10 +94,13 @@ def generate(c,out,scale=1.):
             f=g.model.mesh.field.add('MathEval'); g.model.mesh.field.setString(f,'F',str(size[key]*scale))
             restrict=g.model.mesh.field.add('Restrict'); g.model.mesh.field.setNumber(restrict,'InField',f)
             g.model.mesh.field.setNumbers(restrict,'VolumesList',sorted(regions[name])); fields.append(restrict)
+        antenna_band=size.get('antenna_band_m',.003)
+        antenna_end=transition_end(size,min(size['antenna_m'],size['gap_m']),
+                                   antenna_band,size.get('antenna_transition_m',.014))
         distance=g.model.mesh.field.add('Distance'); g.model.mesh.field.setNumbers(distance,'SurfacesList',sorted(pec|feed))
         g.model.mesh.field.setNumber(distance,'Sampling',80)
         near=g.model.mesh.field.add('Threshold'); g.model.mesh.field.setNumber(near,'InField',distance)
-        for key,val in {'SizeMin':min(size['antenna_m'],size['gap_m'])*scale,'SizeMax':size['bulk_m']*scale,'DistMin':size.get('antenna_band_m',.003),'DistMax':size.get('antenna_transition_m',.014)}.items():
+        for key,val in {'SizeMin':min(size['antenna_m'],size['gap_m'])*scale,'SizeMax':size['bulk_m']*scale,'DistMin':antenna_band,'DistMax':antenna_end}.items():
             g.model.mesh.field.setNumber(near,key,val)
         fields.append(near)
         # Apply distance refinement on BOTH sides of the shared plasma/wall faces.
@@ -79,7 +108,9 @@ def generate(c,out,scale=1.):
         # be restricted to the cylindrical side wall. Distances are physical;
         # --scale changes target element sizes, not the band thickness.
         refinement_surfaces = boundary(pv)
+        interface_end=None
         if 'interface_m' in size:
+            interface_end=transition_end(size,size['interface_m'],size['interface_band_m'],size['interface_transition_m'])
             distance=g.model.mesh.field.add('Distance')
             g.model.mesh.field.setNumbers(distance,'SurfacesList',sorted(refinement_surfaces))
             g.model.mesh.field.setNumber(distance,'Sampling',160)
@@ -87,21 +118,27 @@ def generate(c,out,scale=1.):
             for key,val in {'InField':distance, 'SizeMin':size['interface_m']*scale,
                             'SizeMax':size['bulk_m']*scale,
                             'DistMin':size['interface_band_m'],
-                            'DistMax':size['interface_transition_m']}.items():
+                            'DistMax':interface_end}.items():
                 g.model.mesh.field.setNumber(near,key,val)
             fields.append(near)
         f=g.model.mesh.field.add('Min'); g.model.mesh.field.setNumbers(f,'FieldsList',fields); g.model.mesh.field.setAsBackgroundMesh(f)
         for key,val in {'Mesh.MeshSizeMax':size['bulk_m']*scale,'Mesh.MeshSizeFromPoints':0,'Mesh.MeshSizeFromCurvature':0,
                         'Mesh.MeshSizeExtendFromBoundary':0,'Mesh.MshFileVersion':4.1,'Mesh.ElementOrder':1,'Mesh.Algorithm3D':1}.items():
             g.option.setNumber(key,val)
-        g.write(str(out/'rf.brep')); g.model.mesh.generate(3); g.write(str(out/'rf.msh'))
+        g.write(str(out/'rf.brep')); g.model.mesh.generate(3)
+        quality=quality_report(g,regions)
+        g.write(str(out/'rf.msh'))
         (out/'rf.geo').write_text('Merge "rf.msh";\n')
-        report={'groups':groups,'volumes_m3':volumes,'metal_volume_m3':expected_metal,'mesh_scale':scale,
+        report={'quality_by_region':quality,
+                'grading':{'max_size_gradient':size.get('max_size_gradient'),
+                           'effective_antenna_transition_m':antenna_end,
+                           'effective_interface_transition_m':interface_end},
+                'groups':groups,'volumes_m3':volumes,'metal_volume_m3':expected_metal,'mesh_scale':scale,
                 'nodes':len(g.model.mesh.getNodes()[0]),'tetrahedra':sum(len(x) for x in g.model.mesh.getElements(3)[1]),
                 'gmsh_version':g.__version__,'mesh_sha256':digest(out/'rf.msh'),'config_sha256':digest(out/'rf.json'),
                 'interface_refinement':({'surfaces':sorted(refinement_surfaces),
                     'size_m':size['interface_m']*scale,'band_m':size['interface_band_m'],
-                    'transition_m':size['interface_transition_m']} if 'interface_m' in size else None),
+                    'transition_m':interface_end} if 'interface_m' in size else None),
                 'note':'Geometry smoke mesh only; electromagnetic and PML convergence must be checked.'}
         write_json(out/'mesh_report.json',report); return report
     finally: g.finalize()
