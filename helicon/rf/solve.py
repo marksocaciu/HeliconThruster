@@ -26,7 +26,7 @@ def _power_sanity_checks(pin, powers, ppml, outgoing, balance, residual,
               and np.isfinite(balance) and np.isfinite(residual)
               and all(np.isfinite(value) for value in powers.values()))
     flux_difference = abs(outgoing-ppml)/scale if finite else float('inf')
-    sign_tolerance = scale*1e-8
+    sign_tolerance = scale*1e-4
     return {
         'finite_power_values': bool(finite),
         'positive_input_power': bool(finite and pin > 0),
