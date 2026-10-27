@@ -356,6 +356,11 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
                     write_json(out/'run.json',record)
                 comm.barrier()
                 return result
+        repeat_count = int(os.environ.get('HELICON_RF_REPEAT_SOLVES', '0'))
+        if repeat_count < 0 or repeat_count > 10:
+            raise ValueError('HELICON_RF_REPEAT_SOLVES must be between 0 and 10')
+        if repeat_count and options['ksp_type'] != 'fgmres':
+            raise ValueError('Fixed-system repeats require fgmres_positive')
         checkpoint('linear_solve')
         from .diagnostics import IterationMonitor, linear_diagnostics
         monitor = IterationMonitor(comm,out) if options['ksp_type'] != 'preonly' else None
@@ -374,6 +379,11 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
             write_json(out/'solver_diagnostics.json',solver_diagnostics)
             write_json(out/'run.json',record)
             print('RF solver result: '+json.dumps(solver_diagnostics),flush=True)
+        if repeat_count:
+            from .repeat import repeat_fixed_system
+            repeat_fixed_system(problem, options, PETSc, comm, out,
+                                c['solver']['relative_residual_tolerance'],
+                                repeat_count, solver_diagnostics)
         if not solver_diagnostics['accepted']:
             del solved, problem
             checkpoint('linear_solver_failed')
