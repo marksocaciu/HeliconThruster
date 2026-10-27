@@ -9,7 +9,7 @@ MEM_MB=${MEM_MB:-10000}          # MUMPS workspace PER RANK; not total RSS
 JOB_MEMORY_MB=${JOB_MEMORY_MB:-24000}
 MEMORY_RESERVE_MB=${MEMORY_RESERVE_MB:-2000}
 MEMORY_SCOPE=${MEMORY_SCOPE:-1}  # requires Linux systemd user services + cgroup v2
-SOLVER=${SOLVER:-mumps_ooc}      # mumps_ooc, mumps, superlu_dist, gmres_asm
+SOLVER=${SOLVER:-mumps_ooc}      # mumps_ooc, mumps, superlu_dist, gmres_asm, fgmres_positive
 ORDERING=${ORDERING:-7}          # automatic; effective ordering is in analysis JSON
 BLR_TOL=${BLR_TOL:-}
 ANALYSIS_ONLY=${ANALYSIS_ONLY:-0}
@@ -23,7 +23,7 @@ for value in "$RANKS" "$BLAS_THREADS" "$MEM_MB" "$JOB_MEMORY_MB"; do
 done
 [[ "$MEMORY_RESERVE_MB" =~ ^[0-9]+$ ]] || exit 2
 [[ "$MEMORY_SCOPE" =~ ^[01]$ && "$ANALYSIS_ONLY" =~ ^[01]$ ]] || exit 2
-case "$SOLVER" in mumps_ooc|mumps|superlu_dist|gmres_asm) ;; *) echo "Unknown SOLVER: $SOLVER" >&2; exit 2;; esac
+case "$SOLVER" in mumps_ooc|mumps|superlu_dist|gmres_asm|fgmres_positive) ;; *) echo "Unknown SOLVER: $SOLVER" >&2; exit 2;; esac
 
 # The entire launcher, mesh preparation, MPI children and charged cache share a cap.
 # Explicit opt-out is useful on systems without systemd; it is never silent.

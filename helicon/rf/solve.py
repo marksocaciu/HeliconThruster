@@ -42,17 +42,17 @@ def _power_sanity_checks(pin, powers, ppml, outgoing, balance, residual,
 def _linear_solver_options(PETSc, ranks, requested=None, memory_mb=None, scratch_dir=None):
     """Explicit choice wins over the environment; never silently replace it."""
     backend = requested if requested is not None else os.environ.get('HELICON_RF_LU_SOLVER', 'auto')
-    if backend not in ('auto', 'mumps', 'mumps_ooc', 'superlu_dist', 'gmres_asm'):
-        raise ValueError('RF solver must be auto, mumps, mumps_ooc, superlu_dist or gmres_asm')
+    if backend not in ('auto', 'mumps', 'mumps_ooc', 'superlu_dist', 'gmres_asm', 'fgmres_positive'):
+        raise ValueError('RF solver must be auto, mumps, mumps_ooc, superlu_dist, gmres_asm or fgmres_positive')
     ooc = backend == 'mumps_ooc'
     if not ooc and (memory_mb is not None or scratch_dir is not None):
         raise ValueError('MUMPS workspace/scratch arguments require --linear-solver mumps_ooc')
-    if backend == 'gmres_asm':
+    if backend in ('gmres_asm','fgmres_positive'):
         def integer(name, default, minimum):
             value = int(os.environ.get(name, default))
             if value < minimum: raise ValueError(f'{name} must be >= {minimum}')
             return value
-        return {'ksp_type':'gmres', 'ksp_gmres_restart':integer('HELICON_RF_GMRES_RESTART',30,1),
+        options = {'ksp_type':'gmres', 'ksp_gmres_restart':integer('HELICON_RF_GMRES_RESTART',30,1),
                 'ksp_rtol':1e-9, 'ksp_atol':0.0,
                 'ksp_max_it':integer('HELICON_RF_KSP_MAX_IT',1000,1),
                 # Return the last iterate for diagnostics; solve() still rejects failure.
@@ -60,6 +60,11 @@ def _linear_solver_options(PETSc, ranks, requested=None, memory_mb=None, scratch
                 'pc_type':'asm', 'pc_asm_overlap':integer('HELICON_RF_ASM_OVERLAP',1,0),
                 'sub_ksp_type':'preonly', 'sub_pc_type':'ilu',
                 'sub_pc_factor_levels':integer('HELICON_RF_ILU_LEVELS',0,0)}
+        if backend == 'fgmres_positive':
+            options.update(ksp_type='fgmres', ksp_pc_side='right',
+                           ksp_norm_type='unpreconditioned',
+                           ksp_gmres_modifiedgramschmidt=None)
+        return options
     if ooc: backend = 'mumps'
     if backend == 'auto':
         backend = next((name for name in ('mumps', 'superlu_dist')
@@ -193,7 +198,7 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
         raise ValueError('--analysis-only requires MUMPS')
     import basix.ufl
     import ufl
-    from .forms import bilinear,pml_tensors,interface_flux,interface_flux_traces
+    from .forms import bilinear,pml_tensors,interface_flux,interface_flux_traces,positive_preconditioner
     from .run import snapshot
     comm=MPI.COMM_WORLD; build=Path(build); out=Path(out)
     if b_map is None and (build.parent/'background_B.npz').exists():
@@ -290,6 +295,16 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
         ds=ufl.Measure('dS',domain=domain,subdomain_data=ft)
         u,v=ufl.TrialFunction(V),ufl.TestFunction(V)
         form=bilinear(domain,u,v,eps,dx,c)
+        preconditioner_form = None
+        preconditioner_info = None
+        if options['ksp_type'] == 'fgmres':
+            mass_scale = float(os.environ.get('HELICON_RF_PC_MASS_SCALE','1'))
+            preconditioner_form = positive_preconditioner(u,v,eps,dx,c,mass_scale)
+            preconditioner_info = {'type':'positive_curl_mass', 'mass_scale':mass_scale,
+                'weight':'max(1, Frobenius_norm(epsilon_r)/sqrt(3))',
+                'note':'Experimental auxiliary operator; original RF operator unchanged; not AMS.'}
+            if comm.rank == 0:
+                record['preconditioner'] = preconditioner_info
         rhs=ufl.inner(fem.Constant(domain,np.zeros(3,dtype=PETSc.ScalarType)),v)*dx
         fixed=fem.locate_dofs_topological(V,2,np.concatenate((ft.find(FACE['PEC_ANTENNA']),ft.find(FACE['OUTER']))))
         port=fem.locate_dofs_topological(V,2,ft.find(FACE['FEED_SHEET']))
@@ -308,7 +323,7 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
                           dofs=V.dofmap.index_map.size_global*V.dofmap.index_map_bs)
             write_json(out/'run.json',record)
             print('RF linear solver: '+json.dumps(options)+f'; DOFs={record["dofs"]}', flush=True)
-        problem=LinearProblem(form,rhs,bcs=bcs,petsc_options_prefix='helicon_rf_',petsc_options=None)
+        problem=LinearProblem(form,rhs,P=preconditioner_form,bcs=bcs,petsc_options_prefix='helicon_rf_',petsc_options=None)
         analysis = None
         if options.get('pc_factor_mat_solver_type') == 'mumps' and (analysis_only or job_memory_mb is not None):
             # Assemble into LinearProblem's existing matrix; no second global matrix.
@@ -467,6 +482,7 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
                 'mpi_ranks':comm.size,'dolfinx':dolfinx.__version__,'petsc':str(PETSc.Sys.getVersion()),
                 'scalar_type':str(PETSc.ScalarType),'linear_solver_options':options,
                 'solver_diagnostics':solver_diagnostics, 'solver_analysis':analysis,
+                'preconditioner':preconditioner_info,
                 'limitations':['Ideal gap-sheet source and PEC antenna; impedance is source-model dependent, not calibrated terminal impedance.',
                     'No coax, matching network, RF coil shielding, reflector, sheath, or plume plasma.',
                     ('Spatial cellwise plasma density/collision map supplied.' if profile else 'Fixed uniform plasma state; effective collision rate is a user assumption.'),
@@ -495,7 +511,7 @@ def _result_exit_code(result):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--build');p.add_argument('--out');p.add_argument('--b-map');p.add_argument('--plasma-map');p.add_argument('--check-runtime',action='store_true');p.add_argument('--expected-ranks',type=int)
-    p.add_argument('--linear-solver',choices=('auto','mumps','mumps_ooc','superlu_dist','gmres_asm'),
+    p.add_argument('--linear-solver',choices=('auto','mumps','mumps_ooc','superlu_dist','gmres_asm','fgmres_positive'),
                    help='Linear solver; default HELICON_RF_LU_SOLVER or auto')
     p.add_argument('--mumps-memory-mb',type=int,help='OOC workspace MB per rank (default env or 3000); not total RSS cap')
     p.add_argument('--mumps-scratch-dir',help='Existing writable OOC scratch directory (or HELICON_RF_MUMPS_SCRATCH)')

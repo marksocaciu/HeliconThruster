@@ -55,3 +55,22 @@ def interface_flux_traces(domain, E, frequency_Hz, physical_indicator):
         # PML's outward cell normal points back into the physical domain.
         pml -= (1-physical_indicator(side))*local
     return physical, pml
+
+
+def positive_preconditioner(u, v, eps, dx, c, mass_scale=1.):
+    """Experimental definite auxiliary operator, NOT a change to RF physics.
+
+    beta = mass_scale * k0^2 * max(1, ||epsilon_r||_F/sqrt(3)).
+    The normalized Frobenius norm is a positive scale heuristic, not a
+    spectral equivalence guarantee. Use real identity permeability throughout,
+    including PML cells; the complex PML and tensor plasma remain in A.
+    """
+    import ufl
+    if not np.isfinite(mass_scale) or mass_scale <= 0:
+        raise ValueError('HELICON_RF_PC_MASS_SCALE must be positive and finite')
+    k02=(2*np.pi*c['frequency_Hz'])**2*MU0*EPS_0
+    if not np.isfinite(k02) or k02 <= 0:
+        raise ValueError('Positive preconditioner needs a positive finite frequency')
+    weight=ufl.real(ufl.sqrt(ufl.max_value(1.,ufl.real(ufl.inner(eps,eps))/3.)))
+    return (ufl.inner(ufl.curl(u),ufl.curl(v))+
+            mass_scale*k02*weight*ufl.inner(u,v))*dx
