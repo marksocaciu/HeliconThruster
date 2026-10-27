@@ -149,3 +149,65 @@ class LauncherRegression(unittest.TestCase):
             self.assertFalse((root/'run/prepared').exists())
             status=json.loads((root/'run/launcher_status.json').read_text())
             self.assertEqual(status['exit_code'],17)
+
+
+class FailureExitCodes(unittest.TestCase):
+    def test_rejections_remain_unsuccessful_without_exceptions(self):
+        from helicon.rf.solve import _result_exit_code
+        self.assertEqual(_result_exit_code({'status':'memory_rejected'}),3)
+        self.assertEqual(_result_exit_code({'status':'linear_solver_failed'}),4)
+        self.assertEqual(_result_exit_code({'status':'analysis_completed','analysis':{'admission':{'accepted':False}}}),3)
+        self.assertEqual(_result_exit_code({'status':'checks_failed','numerical_checks_passed':False}),2)
+
+
+@unittest.skipUnless(os.environ.get('HELICON_FEM_DIAGNOSTICS')=='1','opt-in PETSc failed-solve regression')
+class FailedIterationDiagnostics(unittest.TestCase):
+    def test_iteration_limit_retains_history_and_true_residual(self):
+        import json
+        from mpi4py import MPI
+        from petsc4py import PETSc
+        from helicon.rf.solve import _solve_with_options, _result_exit_code
+        from helicon.rf.diagnostics import IterationMonitor, linear_diagnostics
+        comm=MPI.COMM_WORLD
+        directory=comm.bcast(tempfile.mkdtemp() if comm.rank==0 else None,root=0)
+        A=PETSc.Mat().createAIJ([50,50],nnz=3,comm=comm)
+        low,high=A.getOwnershipRange()
+        for row in range(low,high):
+            A.setValue(row,row,2.)
+            if row: A.setValue(row,row-1,-1.)
+            if row < 49: A.setValue(row,row+1,-1.)
+        A.assemble()
+        x,b=A.createVecs()
+        for row in range(low,high): b.setValue(row,1+0.01*(row%7))
+        b.assemble(); x.set(0)
+        ksp=PETSc.KSP().create(comm); ksp.setOperators(A); ksp.setOptionsPrefix('failure_test_')
+        monitor=IterationMonitor(comm,directory,every=1)
+        problem=SimpleNamespace(A=A,b=b,x=x,solver=ksp)
+        problem.solve=lambda:(ksp.solve(b,x),x)[1]
+        options=_linear_solver_options(PETSc,comm.size,'gmres_asm')
+        options={k:v for k,v in options.items() if not k.startswith(('sub_','pc_asm_'))}
+        options.update(pc_type='jacobi',ksp_max_it=1)
+        try:
+            ksp.setMonitor(monitor)
+            _solve_with_options(problem,options,PETSc)
+            monitor.close(); ksp.cancelMonitor()
+            result=linear_diagnostics(problem,PETSc,1e-8)
+            self.assertEqual(result['converged_reason'],PETSc.KSP.ConvergedReason.DIVERGED_MAX_IT)
+            self.assertEqual(result['iterations'],1)
+            self.assertGreater(result['true_relative_residual'],1e-8)
+            self.assertFalse(result['accepted'])
+            self.assertEqual(_result_exit_code({'status':'linear_solver_failed'}),4)
+            if comm.rank==0:
+                history=[json.loads(line) for line in Path(directory,'ksp_history.jsonl').read_text().splitlines()]
+                self.assertGreaterEqual(len(history),2)
+                self.assertEqual(history[-1]['iteration'],1)
+            # A favorable KSP reason/norm must never bypass the actual residual.
+            problem.solver=SimpleNamespace(getConvergedReason=lambda:1,
+                getIterationNumber=lambda:1,getResidualNorm=lambda:0.)
+            self.assertFalse(linear_diagnostics(problem,PETSc,1e-8)['accepted'])
+        finally:
+            monitor.close(); ksp.destroy(); x.destroy(); b.destroy(); A.destroy()
+            comm.barrier()
+            if comm.rank==0:
+                import shutil
+                shutil.rmtree(directory)

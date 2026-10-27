@@ -79,11 +79,11 @@ def main():
     out=prepare(c,a.out,a.mesh_scale,a.plasma_summary,a.b_map)
     if a.mesh_only:
         print(f'Prepared mesh only: {out}/mesh/rf.msh. Solve on complex Linux with helicon.rf.solve.');return 0
-    from .solve import solve
+    from .solve import solve, _result_exit_code
     result=solve(out/'mesh',out/'solution',out/'background_B.npz' if a.b_map else None)
     from .report import render
-    render(out/'solution')
+    if result['status'] in ('completed','checks_failed'): render(out/'solution')
     print(json.dumps(result,indent=2))
-    return 0 if result['numerical_checks_passed'] else 2
+    return _result_exit_code(result)
 
 if __name__=='__main__': sys.exit(main())

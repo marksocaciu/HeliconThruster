@@ -127,3 +127,43 @@ Tests cover degree-1/2 reaction-vector equivalence, a known-solution iterative
 solve, option lifetime, native symbolic-only analysis, budget rejection, and
 launcher mesh reuse/error propagation. Local real-PETSc testing is not a full
 complex-plasma solve or proof of the target case's memory/convergence behavior.
+
+## Interpreting rejected and unconverged runs
+
+The supplied Linux AMF runs (`ORDERING=2`) estimated 78,036 and 80,533 MB
+of MUMPS OOC memory, before application memory. They are rejected correctly.
+Do not increase the workspace limit to admit them on this machine. The earlier
+PORD estimate was substantially lower, but still too large for the default
+whole-job budget. Differences between separate imports/analyses can come from
+partitioning and global numbering; the current output does not establish the
+specific source of that variability.
+
+`DIVERGED_ITS` means the iteration limit was reached without convergence. It
+does not establish that residuals were increasing: inspect the history. The
+solver now writes `ksp_history.jsonl` (KSP-reported norms, every iteration), prints
+progress every 25 iterations, and retains `solver_diagnostics.json` including
+the true residual of the last iterate even when GMRES fails. KSP-reported norms
+can be preconditioned; they must not be confused with the true residual.
+
+Memory rejection returns status `memory_rejected`, exit 3. Iterative failure
+returns `linear_solver_failed`, exit 4. Neither exports accepted fields, and
+neither invokes the application's MPI_ABORT path. MPI may still report the
+nonzero process exit; missing PMIx/PRRTE help files are a separate installation
+issue. Other unexpected exceptions still abort MPI to avoid hung ranks.
+
+A bounded next experiment is local ILU(1), retaining restart 30 and the same
+1,000-iteration limit and 24 GB job cap:
+
+```bash
+BUILD="$PWD/runs/rf-smooth-20261026-180559/prepared/mesh" \
+  SOLVER=gmres_asm RANKS=4 HELICON_RF_ILU_LEVELS=1 bash run.sh
+```
+
+This changes the preconditioner, not the physical operator or acceptance
+threshold. It may require more RAM and may still fail to converge. If its
+history stalls, increasing the iteration count is not an established remedy;
+a smaller reference case and an H(curl)-appropriate preconditioner are needed.
+
+`run.sh` is executable in the checkout. For a previously copied Linux file,
+use `chmod 755 run.sh`; `chmod 777` is unnecessary. Invoking `bash run.sh`
+also avoids dependence on the copied executable bit.

@@ -55,7 +55,8 @@ def _linear_solver_options(PETSc, ranks, requested=None, memory_mb=None, scratch
         return {'ksp_type':'gmres', 'ksp_gmres_restart':integer('HELICON_RF_GMRES_RESTART',30,1),
                 'ksp_rtol':1e-9, 'ksp_atol':0.0,
                 'ksp_max_it':integer('HELICON_RF_KSP_MAX_IT',1000,1),
-                'ksp_error_if_not_converged':True,
+                # Return the last iterate for diagnostics; solve() still rejects failure.
+                'ksp_error_if_not_converged':False,
                 'pc_type':'asm', 'pc_asm_overlap':integer('HELICON_RF_ASM_OVERLAP',1,0),
                 'sub_ksp_type':'preonly', 'sub_pc_type':'ilu',
                 'sub_pc_factor_levels':integer('HELICON_RF_ILU_LEVELS',0,0)}
@@ -332,26 +333,42 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
                     write_json(out/'run.json',record)
                 return result
             if not analysis['admission']['accepted']:
-                raise RuntimeError('Memory admission rejected before numerical factorization: '+
-                                   '; '.join(analysis['admission']['reasons']))
+                del problem
+                result = {'status':'memory_rejected', 'numerical_checks_passed':False,
+                          'analysis':analysis, 'error':'; '.join(analysis['admission']['reasons'])}
+                if comm.rank == 0:
+                    record.update(result,finished_utc=utc_now())
+                    write_json(out/'run.json',record)
+                comm.barrier()
+                return result
         checkpoint('linear_solve')
-        solved = _solve_with_options(problem, options, PETSc)
-        reason = int(problem.solver.getConvergedReason())
-        if reason <= 0: raise RuntimeError('RF linear solve failed')
-        # Check the actual constrained system, independently of KSP's PC norm.
-        residual = problem.b.duplicate()
-        problem.A.mult(problem.x, residual)
-        residual.axpy(-1,problem.b)
-        true_relative_residual = residual.norm()/max(problem.b.norm(),1e-300)
-        residual.destroy()
-        solver_diagnostics = {'converged_reason':reason,
-            'iterations':int(problem.solver.getIterationNumber()),
-            'true_relative_residual':float(true_relative_residual)}
+        from .diagnostics import IterationMonitor, linear_diagnostics
+        monitor = IterationMonitor(comm,out) if options['ksp_type'] != 'preonly' else None
+        if monitor is not None: problem.solver.setMonitor(monitor)
+        try:
+            solved = _solve_with_options(problem, options, PETSc)
+        finally:
+            if monitor is not None:
+                monitor.close()
+                problem.solver.cancelMonitor()
+        solver_diagnostics = linear_diagnostics(problem,PETSc,c['solver']['relative_residual_tolerance'])
+        if monitor is not None:
+            solver_diagnostics['history_write_error'] = comm.bcast(monitor.error,root=0)
         if comm.rank == 0:
             record['solver_diagnostics'] = solver_diagnostics
+            write_json(out/'solver_diagnostics.json',solver_diagnostics)
             write_json(out/'run.json',record)
-        if not np.isfinite(true_relative_residual) or true_relative_residual > c['solver']['relative_residual_tolerance']:
-            raise RuntimeError(f'RF true algebraic residual {true_relative_residual} exceeds tolerance')
+            print('RF solver result: '+json.dumps(solver_diagnostics),flush=True)
+        if not solver_diagnostics['accepted']:
+            del solved, problem
+            checkpoint('linear_solver_failed')
+            result = {'status':'linear_solver_failed','numerical_checks_passed':False,
+                      'solver_diagnostics':solver_diagnostics}
+            if comm.rank == 0:
+                record.update(result,finished_utc=utc_now())
+                write_json(out/'run.json',record)
+            comm.barrier()
+            return result
         # Own the field independently before LinearProblem releases PETSc objects.
         solution=fem.Function(V); solution.name='E_peak'
         solution.x.array[:]=solved.x.array; solution.x.scatter_forward()
@@ -468,10 +485,18 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
         raise
 
 
+
+def _result_exit_code(result):
+    if result['status'] == 'analysis_completed':
+        return 0 if result['analysis']['admission']['accepted'] else 3
+    if result['status'] == 'memory_rejected': return 3
+    if result['status'] == 'linear_solver_failed': return 4
+    return 0 if result['numerical_checks_passed'] else 2
+
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--build');p.add_argument('--out');p.add_argument('--b-map');p.add_argument('--plasma-map');p.add_argument('--check-runtime',action='store_true');p.add_argument('--expected-ranks',type=int)
     p.add_argument('--linear-solver',choices=('auto','mumps','mumps_ooc','superlu_dist','gmres_asm'),
-                   help='LU backend; default HELICON_RF_LU_SOLVER or auto')
+                   help='Linear solver; default HELICON_RF_LU_SOLVER or auto')
     p.add_argument('--mumps-memory-mb',type=int,help='OOC workspace MB per rank (default env or 3000); not total RSS cap')
     p.add_argument('--mumps-scratch-dir',help='Existing writable OOC scratch directory (or HELICON_RF_MUMPS_SCRATCH)')
     p.add_argument('--analysis-only',action='store_true',help='MUMPS symbolic analysis only; no factorization')
@@ -492,8 +517,7 @@ def main():
     result=solve(a.build,a.out,a.b_map,a.plasma_map,linear_solver=a.linear_solver,mumps_memory_mb=a.mumps_memory_mb,mumps_scratch_dir=a.mumps_scratch_dir,analysis_only=a.analysis_only,job_memory_mb=a.job_memory_mb,memory_reserve_mb=a.memory_reserve_mb)
     from mpi4py import MPI
     if MPI.COMM_WORLD.rank==0: print(json.dumps(result,indent=2))
-    if result['status'] == 'analysis_completed': return 0 if result['analysis']['admission']['accepted'] else 3
-    return 0 if result['numerical_checks_passed'] else 2
+    return _result_exit_code(result)
 
 if __name__=='__main__':
     try:
