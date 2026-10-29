@@ -1,6 +1,7 @@
 """Controlled ILU comparisons on an already assembled RF system."""
 import json
 import math
+import os
 from types import SimpleNamespace
 from .diagnostics import IterationMonitor, linear_diagnostics
 from .fingerprints import assembly_fingerprint
@@ -66,7 +67,9 @@ def compare_ilu(problem, options, PETSc, comm, out, tolerance, levels, first):
     problem.solver.reset()  # Release old factors before constructing another PC.
     x = problem.x.duplicate()
     try:
-        for index, level in enumerate(levels, start=2):
+        variants = [(level, scaled) for level in levels
+                    for scaled in ((False, True) if os.environ.get('HELICON_RF_COMPARE_SCALED_ILU') == '1' else (False,))]
+        for index, (level, scaled) in enumerate(variants, start=2):
             directory = out / ('ilu-%02d' % index)
             error = None
             if comm.rank == 0:
@@ -85,8 +88,16 @@ def compare_ilu(problem, options, PETSc, comm, out, tolerance, levels, first):
                 trial_options = dict(options, sub_pc_factor_levels=level)
                 if level == 1:
                     trial_options["sub_pc_factor_mat_ordering_type"] = "rcm"
+                ordering = trial_options.get('sub_pc_factor_mat_ordering_type', 'natural')
+                if scaled:
+                    trial_options['sub_pc_type'] = 'none'
+                    trial_options.pop('sub_pc_factor_levels', None)
+                    trial_options.pop('sub_pc_factor_mat_ordering_type', None)
                 probe = {}
                 def run():
+                    if scaled:
+                        from .equilibrated import install_scaled_local_ilu
+                        probe['equilibration'] = install_scaled_local_ilu(solver, level, ordering, PETSc, comm)
                     probe.update(probe_pc(solver, A, P, problem.b, comm))
                     viewer = PETSc.Viewer().createASCII(str(directory/'solver_setup.txt'), comm=comm)
                     try: solver.view(viewer)
@@ -97,7 +108,7 @@ def compare_ilu(problem, options, PETSc, comm, out, tolerance, levels, first):
                     solver.solve(problem.b, x)
                 fixed = SimpleNamespace(A=A, b=problem.b, x=x, solver=solver, solve=run)
                 _solve_with_options(fixed, trial_options, PETSc)
-                row = dict(linear_diagnostics(fixed, PETSc, tolerance), ilu_level=level, pc_probe=probe)
+                row = dict(linear_diagnostics(fixed, PETSc, tolerance), ilu_level=level, diagonally_scaled=scaled, ordering=ordering, pc_probe=probe)
                 monitor.close()
                 row['history_write_error'] = comm.bcast(monitor.error, root=0)
                 report['attempts'].append(row)

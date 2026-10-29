@@ -64,3 +64,20 @@ The user's conditional RCM edit for ILU(1) is retained; the ILU(0) control keeps
 its original ordering. For a short diagnostic use the command above with
 HELICON_RF_KSP_MAX_IT=25. The probes, matrix checks and unchanged-system check
 still run; do not use that short iteration budget to assess final convergence.
+
+## Diagonally equilibrated local ILU
+
+Set HELICON_RF_COMPARE_SCALED_ILU=1 with HELICON_RF_COMPARE_ILU="1" to run
+baseline ILU(0)/natural, ILU(1)/RCM, then scaled ILU(1)/RCM in one process.
+Use 25 iterations initially. Each local block B is copied and scaled to D B D,
+where D_ii=1/sqrt(B_ii). Apply the mapped inverse D ILU(D B D)^(-1) D.
+Invalid, nonpositive or significantly complex diagonals reject setup explicitly.
+Original A, b, P and the subdomain matrices are preserved. Extra local matrix
+storage is required; retain the 24 GB scope limit on the coarse mesh.
+
+The report uses diagonally_scaled to identify variants, records the scaled
+local diagonal ranges (approximately one), and retains existing PC output
+probes. The Python local PC wraps a PETSc ILU, whose setup is included in the
+viewer output. Local matrix checks still refer to original unscaled blocks.
+Scaling is not a new physical operator and is not guaranteed to cure ILU
+instability. The normal exit code still describes the original solve.
