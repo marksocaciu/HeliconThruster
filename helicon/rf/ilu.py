@@ -73,6 +73,7 @@ def compare_ilu(problem, options, PETSc, comm, out, tolerance, levels, first):
                 monitor = IterationMonitor(comm, directory)
                 solver.setMonitor(monitor)
                 trial_options = dict(options, sub_pc_factor_levels=level)
+                trial_options["sub_pc_factor_mat_ordering_type"] = "rcm"
                 probe = {}
                 def run():
                     probe.update(probe_pc(solver, A, P, problem.b, comm))
