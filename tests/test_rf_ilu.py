@@ -36,8 +36,31 @@ class ILUTests(unittest.TestCase):
         r=compare_ilu(p,opts,PETSc,comm,out,1e-8,[1,0],first)
         assert r['attempts'][0]['pc_probe']['pc_output_norm'] != r['attempts'][1]['pc_probe']['pc_output_norm']
         assert r['A_b_P_unchanged']
+        assert r['P_matrix_checks']['relative_hermitian_defect'] == 0
+        assert r['P_matrix_checks']['relative_imaginary_norm'] == 0
+        assert r['P_matrix_checks']['diagonal_dynamic_range'] == 1
+        assert len(r['attempts'][1]['pc_probe']['rank_diagnostics']) == comm.size
         assert all(v['accepted'] and v['pc_probe']['finite'] for v in r['attempts'])
         assert r['attempts'][0]['true_relative_residual']==r['attempts'][2]['true_relative_residual']
         x.axpy(-1,before); assert x.norm()==0
         if comm.rank==0: print('PASS: sweep preserves A, b, original x and repeats scale reproducibly')
         before.destroy(); k.destroy(); x.destroy(); b.destroy(); A.destroy(); P.destroy()
+
+    def test_detects_asymmetry_and_bad_diagonals(self):
+        from petsc4py import PETSc
+        from mpi4py import MPI
+        from helicon.rf.matrix_checks import matrix_checks
+        A=PETSc.Mat().createAIJ([4,4], nnz=3, comm=MPI.COMM_WORLD)
+        for i in range(*A.getOwnershipRange()):
+            A[i,i]=[-2,0,2,8][i]
+            if i==0: A[0,1]=3
+        A.assemble()
+        try:
+            before=A.norm()
+            d=matrix_checks(A,PETSc)
+            self.assertGreater(d['relative_hermitian_defect'],0)
+            self.assertEqual(d['zero_diagonals'],1)
+            self.assertEqual(d['nonpositive_real_diagonals'],2)
+            self.assertEqual(d['diagonal_dynamic_range'],4)
+            self.assertEqual(A.norm(),before)
+        finally: A.destroy()

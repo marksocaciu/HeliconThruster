@@ -14,6 +14,8 @@ def probe_pc(solver, A, P, b, comm):
     need not make this defect small. Large values are diagnostic, not proof
     of a specific pivot or assembly failure.
     """
+    from petsc4py import PETSc
+    from .matrix_checks import local_pc_checks, stable_norm
     solver.setUp()
     pc = solver.getPC()
     z = b.duplicate(); work = b.duplicate()
@@ -29,7 +31,12 @@ def probe_pc(solver, A, P, b, comm):
         az = float(work.norm()) / max(bn, 1e-300)
         subtypes = [{'ksp': sub.getType(), 'pc': sub.getPC().getType()}
                     for sub in pc.getASMSubKSP()]
-        return {'rhs_norm': finite(bn), 'pc_output_norm': finite(zn),
+        rank_output = {'rank': comm.rank,
+                       'owned_rhs_norm': finite(stable_norm(b.getArray(readonly=True))),
+                       'owned_pc_output_norm': finite(stable_norm(z.getArray(readonly=True))),
+                       'local_blocks': local_pc_checks(pc, PETSc)}
+        rank_outputs = comm.allgather(rank_output)
+        return {'rank_diagnostics': rank_outputs, 'rhs_norm': finite(bn), 'pc_output_norm': finite(zn),
                 'output_over_rhs': finite(zn/max(bn, 1e-300)),
                 'Pz_minus_b_over_rhs': finite(defect), 'Az_over_rhs': finite(az),
                 'finite': all(math.isfinite(v) for v in (bn, zn, defect, az)),
@@ -43,11 +50,14 @@ def compare_ilu(problem, options, PETSc, comm, out, tolerance, levels, first):
     A, P = problem.solver.getOperators()
     before = assembly_fingerprint(A, problem.b, comm, PETSc)
     p_before = assembly_fingerprint(P, problem.b, comm, PETSc)
+    from .matrix_checks import matrix_checks
+    p_checks = matrix_checks(P, PETSc)
+    if comm.rank == 0: write_json(out/'P_matrix_checks.json', p_checks)
     first_probe = probe_pc(problem.solver, A, P, problem.b, comm)
     viewer = PETSc.Viewer().createASCII(str(out/'ilu-baseline-setup.txt'), comm=comm)
     try: problem.solver.view(viewer)
     finally: viewer.destroy()
-    report = {'same_assembled_system': True, 'assembly_before': before,
+    report = {'same_assembled_system': True, 'P_matrix_checks': p_checks, 'assembly_before': before,
               'P_before': p_before, 'attempts': [dict(first,
                   ilu_level=options['sub_pc_factor_levels'], pc_probe=first_probe)]}
     if comm.rank == 0:
@@ -73,7 +83,8 @@ def compare_ilu(problem, options, PETSc, comm, out, tolerance, levels, first):
                 monitor = IterationMonitor(comm, directory)
                 solver.setMonitor(monitor)
                 trial_options = dict(options, sub_pc_factor_levels=level)
-                trial_options["sub_pc_factor_mat_ordering_type"] = "rcm"
+                if level == 1:
+                    trial_options["sub_pc_factor_mat_ordering_type"] = "rcm"
                 probe = {}
                 def run():
                     probe.update(probe_pc(solver, A, P, problem.b, comm))

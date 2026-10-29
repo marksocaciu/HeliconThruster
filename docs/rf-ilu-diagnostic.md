@@ -45,3 +45,22 @@ Optional regression test with a compatible PETSc/MPI installation:
 ```bash
 HELICON_FEM_DIAGNOSTICS=1 mpiexec -n 2 python3 -m unittest discover -s tests -p test_rf_ilu.py
 ```
+
+## Matrix and rank diagnostics
+
+The comparison now saves `solution/P_matrix_checks.json` and embeds those checks
+in `ilu_diagnostics.json`. Global P and each local ASM matrix are checked for
+relative Hermitian defect, relative imaginary-entry norm, zero/nonpositive real
+diagonals, nonfinite entries, and diagonal magnitude range. These are not a proof
+of positive definiteness. Symmetry checks use temporary sparse matrix storage;
+keep this diagnostic on the coarse reference under the existing memory cap.
+
+Each attempt's `pc_probe.rank_diagnostics` contains owned portions of the real
+ASM output PC(b), and a separate unit-norm all-ones probe of each local ILU.
+The latter identifies local amplification but is not the actual restricted RHS.
+A small response to this single direction does not prove stability.
+
+The user's conditional RCM edit for ILU(1) is retained; the ILU(0) control keeps
+its original ordering. For a short diagnostic use the command above with
+HELICON_RF_KSP_MAX_IT=25. The probes, matrix checks and unchanged-system check
+still run; do not use that short iteration budget to assess final convergence.
