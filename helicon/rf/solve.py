@@ -361,6 +361,12 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
             raise ValueError('HELICON_RF_REPEAT_SOLVES must be between 0 and 10')
         if repeat_count and options['ksp_type'] != 'fgmres':
             raise ValueError('Fixed-system repeats require fgmres_positive')
+        raw_scales = os.environ.get('HELICON_RF_MASS_SCALES', '').split()
+        scales = [float(value) for value in raw_scales]
+        if len(scales) > 10 or any(not np.isfinite(value) or value <= 0 for value in scales):
+            raise ValueError('HELICON_RF_MASS_SCALES requires at most 10 positive finite values')
+        if scales and (options['ksp_type'] != 'fgmres' or repeat_count):
+            raise ValueError('Mass sweep requires fgmres_positive and REPEAT_SOLVES=0')
         checkpoint('linear_solve')
         from .diagnostics import IterationMonitor, linear_diagnostics
         monitor = IterationMonitor(comm,out) if options['ksp_type'] != 'preonly' else None
@@ -379,6 +385,33 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
             write_json(out/'solver_diagnostics.json',solver_diagnostics)
             write_json(out/'run.json',record)
             print('RF solver result: '+json.dumps(solver_diagnostics),flush=True)
+        if scales:
+            from .repeat import repeat_fixed_system
+            from .fingerprints import array_digest
+            # Use a mutable coefficient: compile once, only reassemble P.
+            scale_coefficient = fem.Constant(domain, PETSc.ScalarType(1))
+            base_mass = positive_preconditioner(u,v,eps,dx,c,1.)
+            base_two = positive_preconditioner(u,v,eps,dx,c,2.)
+            variable_P = fem.form(base_mass + (scale_coefficient-1)*(base_two-base_mass))
+            def rebuild_P(matrix, scale):
+                scale_coefficient.value = PETSc.ScalarType(scale)
+                matrix.zeroEntries()
+                assemble_matrix(matrix, variable_P, bcs=bcs)
+                matrix.assemble()
+            owned_cells = domain.topology.index_map(tdim).size_local
+            local_partition = {
+                'rank': comm.rank,
+                'owned_input_cells': array_digest(domain.topology.original_cell_index[:owned_cells]),
+                'owned_cells': owned_cells,
+                'dof_local_range': list(V.dofmap.index_map.local_range),
+                'cell_dofs': array_digest(V.dofmap.list)}
+            partition = comm.allgather(local_partition)
+            if comm.rank == 0:
+                write_json(out/'partition_fingerprint.json', partition)
+            repeat_fixed_system(problem, options, PETSc, comm, out,
+                                c['solver']['relative_residual_tolerance'],
+                                len(scales), solver_diagnostics, scales=scales,
+                                rebuild=rebuild_P, initial_scale=mass_scale)
         if repeat_count:
             from .repeat import repeat_fixed_system
             repeat_fixed_system(problem, options, PETSc, comm, out,
