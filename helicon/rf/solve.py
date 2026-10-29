@@ -367,6 +367,11 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
             raise ValueError('HELICON_RF_MASS_SCALES requires at most 10 positive finite values')
         if scales and (options['ksp_type'] != 'fgmres' or repeat_count):
             raise ValueError('Mass sweep requires fgmres_positive and REPEAT_SOLVES=0')
+        ilu_levels = [int(value) for value in os.environ.get('HELICON_RF_COMPARE_ILU', '').split()]
+        if len(ilu_levels) > 3 or any(level not in (0, 1) for level in ilu_levels):
+            raise ValueError('HELICON_RF_COMPARE_ILU accepts up to three levels, each 0 or 1')
+        if ilu_levels and (options['ksp_type'] != 'fgmres' or scales or repeat_count):
+            raise ValueError('ILU comparison requires fgmres_positive, no mass sweep or repeats')
         checkpoint('linear_solve')
         from .diagnostics import IterationMonitor, linear_diagnostics
         monitor = IterationMonitor(comm,out) if options['ksp_type'] != 'preonly' else None
@@ -385,6 +390,10 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
             write_json(out/'solver_diagnostics.json',solver_diagnostics)
             write_json(out/'run.json',record)
             print('RF solver result: '+json.dumps(solver_diagnostics),flush=True)
+        if ilu_levels:
+            from .ilu import compare_ilu
+            compare_ilu(problem, options, PETSc, comm, out,
+                        c['solver']['relative_residual_tolerance'], ilu_levels, solver_diagnostics)
         if scales:
             from .repeat import repeat_fixed_system
             from .fingerprints import array_digest
