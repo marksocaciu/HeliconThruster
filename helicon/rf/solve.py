@@ -406,9 +406,10 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
             from .ams_transfer import export_system
             export_system(problem, V, degree, np.union1d(fixed,port), out, comm)
         if compare_ams:
-            from .ams_bridge import compare_ams_bridge
-            compare_ams_bridge(problem, options, PETSc, comm, out,
+            from .ams_bridge import compare_ams_tolerances
+            compare_ams_tolerances(problem, options, PETSc, comm, out,
                 c['solver']['relative_residual_tolerance'], solver_diagnostics,
+                rtols=os.environ.get('HELICON_RF_AMS_RTOLS','').strip(),
                 rtol=float(os.environ.get('HELICON_RF_AMS_RTOL','0.01')),
                 max_it=int(os.environ.get('HELICON_RF_AMS_MAX_IT','100')),
                 timeout=float(os.environ.get('HELICON_RF_AMS_TIMEOUT','300')),

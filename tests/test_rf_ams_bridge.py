@@ -69,4 +69,11 @@ class AMSBridgeTests(unittest.TestCase):
   r=failed(p,opts,PETSc,comm,missing,1e-8,first,cap_mb=None,mpiexec='/nonexistent/rf-mpiexec')
   assert r['status']=='bridge_failed',r
   if comm.rank==0:print('PASS complex transport and failed-launch cleanup')
+  from helicon.rf.ams_bridge import compare_ams_tolerances
+  k.setOperators(A,P)
+  sweep=compare_ams_tolerances(p,opts,PETSc,comm,root,1e-8,first,rtols='0.01 0.001',
+   cap_mb=None,python=sys.executable,mpiexec=str(Path(sys.executable).parent/'mpiexec'),petsc_dir=sys.prefix)
+  assert sweep['status']=='completed',sweep
+  assert len(sweep['attempts'])==2
+  assert all(row['outer_result']['accepted'] and row['A_b_P_unchanged'] for row in sweep['attempts'])
   saved.destroy();k.destroy();exact.destroy();b.destroy();x.destroy();A.destroy();P.destroy()

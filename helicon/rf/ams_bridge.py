@@ -121,13 +121,13 @@ class AMSBridge:
         pass
 
 
-def compare_ams_bridge(problem,options,PETSc,comm,out,tolerance,first,**configuration):
+def compare_ams_bridge(problem,options,PETSc,comm,out,tolerance,first,export=None,**configuration):
     from .solve import _solve_with_options
     A,P=problem.solver.getOperators()
     before=assembly_fingerprint(A,problem.b,comm,PETSc)
     p_before=assembly_fingerprint(P,problem.b,comm,PETSc)
     problem.solver.reset()  # Release baseline ASM factors before worker setup.
-    context=AMSBridge(P,comm,out/'ams-export',out/'ams-worker',**configuration)
+    context=AMSBridge(P,comm,export or out/'ams-export',out/'ams-worker',**configuration)
     solver=PETSc.KSP().create(comm);x=problem.x.duplicate();x.set(0);monitor=None
     report={'status':'starting','baseline':first,'inner_applications':context.rows,
             'configuration':configuration,'assembly_before':before,'P_before':p_before}
@@ -169,3 +169,38 @@ def compare_ams_bridge(problem,options,PETSc,comm,out,tolerance,first,**configur
     if not report['A_b_P_unchanged']:raise RuntimeError('AMS bridge changed A, b or P')
     if comm.rank==0:print('RF AMS bridge result: '+str(report.get('outer_result',report.get('bridge_error'))),flush=True)
     return report
+
+
+def compare_ams_tolerances(problem,options,PETSc,comm,out,tolerance,first,rtols=None,**configuration):
+    """Sequential zero-guess trials on one assembly and one shared export."""
+    if not rtols:
+        return compare_ams_bridge(problem,options,PETSc,comm,out,tolerance,first,**configuration)
+    values=[float(value) for value in rtols.split()]
+    if not values or any(not math.isfinite(value) or not 0<value<1 for value in values):
+        raise ValueError('AMS tolerances must be finite and between zero and one')
+    configuration.pop('rtol',None)
+    A,P=problem.solver.getOperators()
+    summary={'status':'running','attempts':[], 'fixed_system':True}
+    def save():
+        collective_io(comm,lambda:atomic_json(out/'ams_tolerance_comparison.json',summary) if comm.rank==0 else None)
+    save()
+    try:
+        for index,rtol in enumerate(values,1):
+            directory=out/f'ams-tolerance-{index}'
+            collective_io(comm,lambda:directory.mkdir(exist_ok=False) if comm.rank==0 else None)
+            # The previous trial resets this KSP to release its baseline factors.
+            problem.solver.setOperators(A,P)
+            if comm.rank==0:print(f'RF AMS tolerance trial {index}: {rtol}',flush=True)
+            report=compare_ams_bridge(problem,options,PETSc,comm,directory,tolerance,first,
+                export=out/'ams-export',rtol=rtol,**configuration)
+            summary['attempts'].append({'rtol':rtol,'directory':str(directory),
+                'status':report['status'],'outer_result':report.get('outer_result'),
+                'A_b_P_unchanged':report['A_b_P_unchanged'],
+                'worker_shutdown':report.get('worker_shutdown'),
+                'application_seconds':sum(row['round_trip_s'] for row in report['inner_applications'])})
+            save()
+            if report.get('bridge_error') or report.get('worker_shutdown',{}).get('returncode')!=0:
+                summary['status']='stopped_on_worker_failure';save();return summary
+        summary['status']='completed';save();return summary
+    finally:
+        problem.solver.setOperators(A,P)

@@ -74,3 +74,23 @@ HELICON_FEM_DIAGNOSTICS=1 mpiexec -n 2 python3 -m unittest discover \
 Use a real-PETSc+hypre environment with mpiexec beside the Python executable.
 The test disables the Linux cgroup requirement explicitly; production comparison
 does not. Local real-parent tests do not certify the Linux complex-parent run.
+
+## Controlled inner-tolerance comparison
+
+Add `HELICON_RF_AMS_RTOLS="0.01 0.001"` to the bridge command and set
+`HELICON_RF_KSP_MAX_IT=100`. This list overrides HELICON_RF_AMS_RTOL.
+Both trials start from zero in the same parent process, using the same A, b, P,
+partition and export. Each trial starts a fresh worker/hierarchy sequentially;
+there is never more than one worker job alive. All other options stay fixed.
+The single-tolerance behavior is preserved when the list is empty.
+
+Read `solution/ams_tolerance_comparison.json` for the compact results and
+`solution/ams-tolerance-1/ams_bridge_diagnostics.json` and
+`solution/ams-tolerance-2/ams_bridge_diagnostics.json` for full diagnostics.
+Each trial's `ams-worker` directory contains its iteration history and worker log.
+Compare true outer residual at the same iteration count, inner application time,
+and successful residual checks. A materially smaller residual with 0.001 supports
+inner accuracy as a contributor; similar progress suggests testing a different P.
+Neither result alone proves the cause. Cgroup peak is cumulative across trials.
+The original baseline still controls exit status; completed trials need not have
+converged. A worker failure stops the sweep and retains diagnostics.
