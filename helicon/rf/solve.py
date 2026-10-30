@@ -380,6 +380,9 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
                 raise ValueError('Inner CG comparison requires fgmres_positive and no other comparison mode')
             if not 0 < inner_rtol < 1 or not 1 <= inner_max_it <= 1000:
                 raise ValueError('Inner CG requires 0 < rtol < 1 and 1 <= max_it <= 1000')
+        compare_ams = os.environ.get('HELICON_RF_COMPARE_AMS_BRIDGE', '0') == '1'
+        if compare_ams and (options['ksp_type'] != 'fgmres' or scales or repeat_count or ilu_levels or compare_cg):
+            raise ValueError('AMS bridge requires fgmres_positive and no other comparison mode')
         checkpoint('linear_solve')
         from .diagnostics import IterationMonitor, linear_diagnostics
         monitor = IterationMonitor(comm,out) if options['ksp_type'] != 'preonly' else None
@@ -398,10 +401,21 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
             write_json(out/'solver_diagnostics.json',solver_diagnostics)
             write_json(out/'run.json',record)
             print('RF solver result: '+json.dumps(solver_diagnostics),flush=True)
-        if os.environ.get('HELICON_RF_EXPORT_AMS', '0') == '1':
+        if compare_ams or os.environ.get('HELICON_RF_EXPORT_AMS', '0') == '1':
             if preconditioner_form is None: raise ValueError('AMS export requires positive P')
             from .ams_transfer import export_system
             export_system(problem, V, degree, np.union1d(fixed,port), out, comm)
+        if compare_ams:
+            from .ams_bridge import compare_ams_bridge
+            compare_ams_bridge(problem, options, PETSc, comm, out,
+                c['solver']['relative_residual_tolerance'], solver_diagnostics,
+                rtol=float(os.environ.get('HELICON_RF_AMS_RTOL','0.01')),
+                max_it=int(os.environ.get('HELICON_RF_AMS_MAX_IT','100')),
+                timeout=float(os.environ.get('HELICON_RF_AMS_TIMEOUT','300')),
+                python=os.environ.get('HELICON_RF_AMS_PYTHON','/usr/bin/python3'),
+                mpiexec=os.environ.get('HELICON_RF_AMS_MPIEXEC','mpiexec'),
+                petsc_dir=os.environ.get('HELICON_RF_AMS_PETSC_DIR','/usr/lib/petscdir/petsc-real'),
+                cap_mb=int(os.environ.get('JOB_MEMORY_MB','24000')))
         if compare_cg:
             from .inner_cg import compare_inner_cg
             compare_inner_cg(problem, options, PETSc, comm, out,
