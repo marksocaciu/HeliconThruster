@@ -372,6 +372,14 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
             raise ValueError('HELICON_RF_COMPARE_ILU accepts up to three levels, each 0 or 1')
         if ilu_levels and (options['ksp_type'] != 'fgmres' or scales or repeat_count):
             raise ValueError('ILU comparison requires fgmres_positive, no mass sweep or repeats')
+        compare_cg = os.environ.get('HELICON_RF_COMPARE_INNER_CG', '0') == '1'
+        inner_rtol = float(os.environ.get('HELICON_RF_INNER_CG_RTOL', '0.01'))
+        inner_max_it = int(os.environ.get('HELICON_RF_INNER_CG_MAX_IT', '100'))
+        if compare_cg:
+            if options['ksp_type'] != 'fgmres' or scales or repeat_count or ilu_levels:
+                raise ValueError('Inner CG comparison requires fgmres_positive and no other comparison mode')
+            if not 0 < inner_rtol < 1 or not 1 <= inner_max_it <= 1000:
+                raise ValueError('Inner CG requires 0 < rtol < 1 and 1 <= max_it <= 1000')
         checkpoint('linear_solve')
         from .diagnostics import IterationMonitor, linear_diagnostics
         monitor = IterationMonitor(comm,out) if options['ksp_type'] != 'preonly' else None
@@ -390,6 +398,11 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
             write_json(out/'solver_diagnostics.json',solver_diagnostics)
             write_json(out/'run.json',record)
             print('RF solver result: '+json.dumps(solver_diagnostics),flush=True)
+        if compare_cg:
+            from .inner_cg import compare_inner_cg
+            compare_inner_cg(problem, options, PETSc, comm, out,
+                             c['solver']['relative_residual_tolerance'], solver_diagnostics,
+                             inner_rtol, inner_max_it)
         if ilu_levels:
             from .ilu import compare_ilu
             compare_ilu(problem, options, PETSc, comm, out,
