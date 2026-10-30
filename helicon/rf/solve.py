@@ -383,6 +383,12 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
         compare_ams = os.environ.get('HELICON_RF_COMPARE_AMS_BRIDGE', '0') == '1'
         if compare_ams and (options['ksp_type'] != 'fgmres' or scales or repeat_count or ilu_levels or compare_cg):
             raise ValueError('AMS bridge requires fgmres_positive and no other comparison mode')
+        ams_scales = [float(value) for value in os.environ.get('HELICON_RF_AMS_MASS_SCALES','').split()]
+        if ams_scales:
+            if not compare_ams or os.environ.get('HELICON_RF_AMS_RTOLS','').strip():
+                raise ValueError('AMS mass scales require bridge mode and no tolerance sweep')
+            if len(ams_scales)>10 or any(not np.isfinite(value) or value<=0 for value in ams_scales):
+                raise ValueError('AMS mass scales require 1 to 10 finite positive values')
         checkpoint('linear_solve')
         from .diagnostics import IterationMonitor, linear_diagnostics
         monitor = IterationMonitor(comm,out) if options['ksp_type'] != 'preonly' else None
@@ -406,10 +412,24 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
             from .ams_transfer import export_system
             export_system(problem, V, degree, np.union1d(fixed,port), out, comm)
         if compare_ams:
-            from .ams_bridge import compare_ams_tolerances
-            compare_ams_tolerances(problem, options, PETSc, comm, out,
+            from .ams_bridge import compare_ams_tolerances, compare_ams_masses
+            compare = compare_ams_tolerances
+            extra = {'rtols':os.environ.get('HELICON_RF_AMS_RTOLS','').strip()}
+            if ams_scales:
+                scale_coefficient = fem.Constant(domain, PETSc.ScalarType(1))
+                base_mass = positive_preconditioner(u,v,eps,dx,c,1.)
+                base_two = positive_preconditioner(u,v,eps,dx,c,2.)
+                variable_P = fem.form(base_mass + (scale_coefficient-1)*(base_two-base_mass))
+                def rebuild_ams_P(matrix, scale):
+                    scale_coefficient.value = PETSc.ScalarType(scale)
+                    matrix.zeroEntries()
+                    assemble_matrix(matrix, variable_P, bcs=bcs)
+                    matrix.assemble()
+                compare = compare_ams_masses
+                extra = {'scales':ams_scales,'rebuild':rebuild_ams_P}
+            compare(problem, options, PETSc, comm, out,
                 c['solver']['relative_residual_tolerance'], solver_diagnostics,
-                rtols=os.environ.get('HELICON_RF_AMS_RTOLS','').strip(),
+                **extra,
                 rtol=float(os.environ.get('HELICON_RF_AMS_RTOL','0.01')),
                 max_it=int(os.environ.get('HELICON_RF_AMS_MAX_IT','100')),
                 timeout=float(os.environ.get('HELICON_RF_AMS_TIMEOUT','300')),

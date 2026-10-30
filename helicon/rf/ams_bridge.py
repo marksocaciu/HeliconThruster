@@ -204,3 +204,70 @@ def compare_ams_tolerances(problem,options,PETSc,comm,out,tolerance,first,rtols=
         summary['status']='completed';save();return summary
     finally:
         problem.solver.setOperators(A,P)
+
+
+def compare_ams_masses(problem,options,PETSc,comm,out,tolerance,first,scales,rebuild,**configuration):
+    """Keep the original system and solution; vary only a separate P matrix."""
+    import shutil
+    from .ams_transfer import save_matrix
+    values=[float(value) for value in scales]
+    if not values or len(values)>10 or any(not math.isfinite(v) or v<=0 for v in values):
+        raise ValueError('AMS requires 1 to 10 finite positive mass scales')
+    A,original_P=problem.solver.getOperators()
+    before=assembly_fingerprint(A,problem.b,comm,PETSc)
+    original_fingerprint=assembly_fingerprint(original_P,problem.b,comm,PETSc)
+    # One work matrix, reused sequentially; preserve the original P exactly.
+    P=original_P.copy()
+    holder=PETSc.KSP().create(comm)
+    fixed=SimpleNamespace(A=A,b=problem.b,x=problem.x,solver=holder)
+    summary={'status':'running','attempts':[],'fixed_A_b_partition':True}
+    def save():
+        collective_io(comm,lambda:atomic_json(out/'ams_mass_comparison.json',summary) if comm.rank==0 else None)
+    problem.solver.reset()
+    try:
+        save()
+        for index,scale in enumerate(values,1):
+            directory=out/f'ams-mass-{index}'
+            export=directory/'ams-export'
+            collective_io(comm,lambda:export.mkdir(parents=True,exist_ok=False) if comm.rank==0 else None)
+            holder.reset()
+            rebuild(P,scale)
+            if assembly_fingerprint(A,problem.b,comm,PETSc)!=before:
+                raise RuntimeError('Mass rebuild changed A or b')
+            holder.setOperators(A,P)
+            # Reuse the original auxiliary operators and vector layout verbatim.
+            source=out/'ams-export'
+            manifest=collective_io(comm,lambda:json.loads((source/'manifest.json').read_text()))
+            files=[]
+            for item in manifest['files_by_rank'][comm.rank]:
+                if item['file']==f'P-{comm.rank}.npz':
+                    files.append(save_matrix(P,export/item['file'],comm))
+                else:
+                    collective_io(comm,lambda item=item:shutil.copyfile(source/item['file'],export/item['file']))
+                    files.append(item)
+            manifest['files_by_rank']=comm.allgather(files)
+            manifest['mass_scale']=scale
+            collective_io(comm,lambda:atomic_json(export/'manifest.json',manifest) if comm.rank==0 else None)
+            if comm.rank==0:print(f'RF AMS mass trial {index}: {scale}',flush=True)
+            report=compare_ams_bridge(fixed,options,PETSc,comm,directory,tolerance,first,**configuration)
+            unchanged=assembly_fingerprint(A,problem.b,comm,PETSc)==before
+            if not unchanged:raise RuntimeError('Mass trial changed A or b')
+            summary['attempts'].append({'mass_scale':scale,'directory':str(directory),
+                'status':report['status'],'outer_result':report.get('outer_result'),
+                'A_b_unchanged':unchanged,'trial_A_b_P_unchanged':report['A_b_P_unchanged'],
+                'worker_shutdown':report.get('worker_shutdown'),
+                'application_seconds':sum(row['round_trip_s'] for row in report['inner_applications'])})
+            save()
+            if report.get('bridge_error') or report.get('worker_shutdown',{}).get('returncode')!=0:
+                summary['status']='stopped_on_worker_failure';break
+        else:summary['status']='completed'
+    except Exception as exc:
+        summary.update(status='failed',error=str(exc));raise
+    finally:
+        holder.destroy();P.destroy()
+        problem.solver.setOperators(A,original_P)
+        summary['original_A_b_P_unchanged']=(before==assembly_fingerprint(A,problem.b,comm,PETSc)
+            and original_fingerprint==assembly_fingerprint(original_P,problem.b,comm,PETSc))
+        save()
+    if not summary['original_A_b_P_unchanged']:raise RuntimeError('Original system changed')
+    return summary

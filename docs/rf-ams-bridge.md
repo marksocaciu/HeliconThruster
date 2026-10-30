@@ -94,3 +94,27 @@ inner accuracy as a contributor; similar progress suggests testing a different P
 Neither result alone proves the cause. Cgroup peak is cumulative across trials.
 The original baseline still controls exit status; completed trials need not have
 converged. A worker failure stops the sweep and retains diagnostics.
+
+
+## Controlled mass-scale comparison
+
+Set `HELICON_RF_AMS_MASS_SCALES="1 3 10"`, `HELICON_RF_AMS_RTOLS=""`,
+`HELICON_RF_AMS_RTOL=0.01`, and `HELICON_RF_KSP_MAX_IT=100` in the bridge
+command. Keep `HELICON_RF_MASS_SCALES=""` (the older ILU comparison).
+The new mode requires HELICON_RF_COMPARE_AMS_BRIDGE=1 and cannot be combined
+with a tolerance sweep. Lists must contain at most ten finite positive scales.
+
+A and b are assembled once. One separate P matrix is reassembled with the
+original boundary conditions for each scale, and its entries are exported to
+that trial's directory. G, Pi and RHS shards are copied unchanged from the
+original export. Each trial starts from zero with a fresh sequential AMS worker.
+Original A, b and P fingerprints must remain unchanged; each trial also checks
+that its P stays unchanged during the solve. The baseline solution is preserved.
+
+Read `solution/ams_mass_comparison.json` for scale, true outer residual,
+application time, worker shutdown and fingerprint checks. Full diagnostics are
+in `solution/ams-mass-1/ams_bridge_diagnostics.json` (scale 1),
+`ams-mass-2` (scale 3), and `ams-mass-3` (scale 10).
+A worker error stops the sweep; nonconvergence at the iteration cap does not.
+The original baseline still determines the run exit code. This remains a
+coarse diagnostic experiment, not an accepted RF solution.

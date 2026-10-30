@@ -76,4 +76,24 @@ class AMSBridgeTests(unittest.TestCase):
   assert sweep['status']=='completed',sweep
   assert len(sweep['attempts'])==2
   assert all(row['outer_result']['accepted'] and row['A_b_P_unchanged'] for row in sweep['attempts'])
+  from helicon.rf.ams_bridge import compare_ams_masses
+  coefficient=fem.Constant(D,PETSc.ScalarType(1))
+  variable=fem.form((ufl.inner(ufl.curl(u),ufl.curl(v))+coefficient*ufl.inner(u,v))*ufl.dx)
+  def rebuild(matrix,scale):
+   coefficient.value=PETSc.ScalarType(scale)
+   matrix.zeroEntries();fp.assemble_matrix(matrix,variable,bcs=[bc]);matrix.assemble()
+  preserved=x.copy()
+  masses=compare_ams_masses(p,opts,PETSc,comm,root,1e-8,first,[1,3,10],rebuild,
+   rtol=.01,cap_mb=None,python=sys.executable,mpiexec=str(Path(sys.executable).parent/'mpiexec'),petsc_dir=sys.prefix)
+  assert masses['status']=='completed',masses
+  assert masses['original_A_b_P_unchanged']
+  assert len(masses['attempts'])==3
+  assert all(row['outer_result']['accepted'] and row['A_b_unchanged'] for row in masses['attempts'])
+  x.axpy(-1,preserved);assert x.norm()==0;preserved.destroy()
+  import json
+  fingerprints=[]
+  for index in range(1,4):
+   trial=json.loads((root/f'ams-mass-{index}'/'ams_bridge_diagnostics.json').read_text())
+   fingerprints.append(trial['P_before'])
+  assert fingerprints[0]!=fingerprints[1]!=fingerprints[2]
   saved.destroy();k.destroy();exact.destroy();b.destroy();x.destroy();A.destroy();P.destroy()
