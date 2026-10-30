@@ -398,6 +398,10 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
             write_json(out/'solver_diagnostics.json',solver_diagnostics)
             write_json(out/'run.json',record)
             print('RF solver result: '+json.dumps(solver_diagnostics),flush=True)
+        if os.environ.get('HELICON_RF_EXPORT_AMS', '0') == '1':
+            if preconditioner_form is None: raise ValueError('AMS export requires positive P')
+            from .ams_transfer import export_system
+            export_system(problem, V, degree, np.union1d(fixed,port), out, comm)
         if compare_cg:
             from .inner_cg import compare_inner_cg
             compare_inner_cg(problem, options, PETSc, comm, out,
