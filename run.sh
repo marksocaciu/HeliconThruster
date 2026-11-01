@@ -23,7 +23,7 @@ for value in "$RANKS" "$BLAS_THREADS" "$MEM_MB" "$JOB_MEMORY_MB"; do
 done
 [[ "$MEMORY_RESERVE_MB" =~ ^[0-9]+$ ]] || exit 2
 [[ "$MEMORY_SCOPE" =~ ^[01]$ && "$ANALYSIS_ONLY" =~ ^[01]$ ]] || exit 2
-case "$SOLVER" in mumps_ooc|mumps|superlu_dist|gmres_asm|fgmres_positive) ;; *) echo "Unknown SOLVER: $SOLVER" >&2; exit 2;; esac
+case "$SOLVER" in mumps_ooc|mumps|superlu_dist|gmres_asm|fgmres_positive|fgmres_ams) ;; *) echo "Unknown SOLVER: $SOLVER" >&2; exit 2;; esac
 
 # The entire launcher, mesh preparation, MPI children and charged cache share a cap.
 # Explicit opt-out is useful on systems without systemd; it is never silent.

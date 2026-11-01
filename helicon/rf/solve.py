@@ -42,12 +42,12 @@ def _power_sanity_checks(pin, powers, ppml, outgoing, balance, residual,
 def _linear_solver_options(PETSc, ranks, requested=None, memory_mb=None, scratch_dir=None):
     """Explicit choice wins over the environment; never silently replace it."""
     backend = requested if requested is not None else os.environ.get('HELICON_RF_LU_SOLVER', 'auto')
-    if backend not in ('auto', 'mumps', 'mumps_ooc', 'superlu_dist', 'gmres_asm', 'fgmres_positive'):
-        raise ValueError('RF solver must be auto, mumps, mumps_ooc, superlu_dist, gmres_asm or fgmres_positive')
+    if backend not in ('auto', 'mumps', 'mumps_ooc', 'superlu_dist', 'gmres_asm', 'fgmres_positive', 'fgmres_ams'):
+        raise ValueError('RF solver must be auto, mumps, mumps_ooc, superlu_dist, gmres_asm, fgmres_positive or fgmres_ams')
     ooc = backend == 'mumps_ooc'
     if not ooc and (memory_mb is not None or scratch_dir is not None):
         raise ValueError('MUMPS workspace/scratch arguments require --linear-solver mumps_ooc')
-    if backend in ('gmres_asm','fgmres_positive'):
+    if backend in ('gmres_asm','fgmres_positive','fgmres_ams'):
         def integer(name, default, minimum):
             value = int(os.environ.get(name, default))
             if value < minimum: raise ValueError(f'{name} must be >= {minimum}')
@@ -60,10 +60,13 @@ def _linear_solver_options(PETSc, ranks, requested=None, memory_mb=None, scratch
                 'pc_type':'asm', 'pc_asm_overlap':integer('HELICON_RF_ASM_OVERLAP',1,0),
                 'sub_ksp_type':'preonly', 'sub_pc_type':'ilu',
                 'sub_pc_factor_levels':integer('HELICON_RF_ILU_LEVELS',0,0)}
-        if backend == 'fgmres_positive':
+        if backend in ('fgmres_positive','fgmres_ams'):
             options.update(ksp_type='fgmres', ksp_pc_side='right',
                            ksp_norm_type='unpreconditioned',
                            ksp_gmres_modifiedgramschmidt=None)
+        if backend == 'fgmres_ams':
+            options = {k:v for k,v in options.items() if not k.startswith(('pc_', 'sub_'))}
+            options['pc_type'] = 'python'
         return options
     if ooc: backend = 'mumps'
     if backend == 'auto':
@@ -302,7 +305,7 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
             preconditioner_form = positive_preconditioner(u,v,eps,dx,c,mass_scale)
             preconditioner_info = {'type':'positive_curl_mass', 'mass_scale':mass_scale,
                 'weight':'max(1, Frobenius_norm(epsilon_r)/sqrt(3))',
-                'note':'Experimental auxiliary operator; original RF operator unchanged; not AMS.'}
+                'note':'Positive auxiliary operator for RF preconditioning.'}
             if comm.rank == 0:
                 record['preconditioner'] = preconditioner_info
         rhs=ufl.inner(fem.Constant(domain,np.zeros(3,dtype=PETSc.ScalarType)),v)*dx
@@ -389,17 +392,29 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
                 raise ValueError('AMS mass scales require bridge mode and no tolerance sweep')
             if len(ams_scales)>10 or any(not np.isfinite(value) or value<=0 for value in ams_scales):
                 raise ValueError('AMS mass scales require 1 to 10 finite positive values')
+        main_ams = options.get('pc_type') == 'python'
+        if main_ams and (repeat_count or scales or ilu_levels or compare_cg or compare_ams or ams_scales
+                         or os.environ.get('HELICON_RF_AMS_RTOLS','').strip()
+                         or os.environ.get('HELICON_RF_COMPARE_SCALED_ILU','0') == '1'):
+            raise ValueError('Main AMS solver requires comparison modes to be disabled')
         checkpoint('linear_solve')
         from .diagnostics import IterationMonitor, linear_diagnostics
         monitor = IterationMonitor(comm,out) if options['ksp_type'] != 'preonly' else None
         if monitor is not None: problem.solver.setMonitor(monitor)
         try:
-            solved = _solve_with_options(problem, options, PETSc)
+            if main_ams:
+                from .ams_main import solve_ams
+                solved, ams_report = solve_ams(problem, options, PETSc, comm, out, V, degree,
+                                              np.union1d(fixed,port))
+            else:
+                solved = _solve_with_options(problem, options, PETSc)
         finally:
             if monitor is not None:
                 monitor.close()
                 problem.solver.cancelMonitor()
         solver_diagnostics = linear_diagnostics(problem,PETSc,c['solver']['relative_residual_tolerance'])
+        if main_ams and ams_report.get('error'):
+            solver_diagnostics.update(accepted=False, bridge_error=ams_report['error'])
         if monitor is not None:
             solver_diagnostics['history_write_error'] = comm.bcast(monitor.error,root=0)
         if comm.rank == 0:
@@ -407,7 +422,7 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
             write_json(out/'solver_diagnostics.json',solver_diagnostics)
             write_json(out/'run.json',record)
             print('RF solver result: '+json.dumps(solver_diagnostics),flush=True)
-        if compare_ams or os.environ.get('HELICON_RF_EXPORT_AMS', '0') == '1':
+        if compare_ams or (not main_ams and os.environ.get('HELICON_RF_EXPORT_AMS', '0') == '1'):
             if preconditioner_form is None: raise ValueError('AMS export requires positive P')
             from .ams_transfer import export_system
             export_system(problem, V, degree, np.union1d(fixed,port), out, comm)
@@ -615,7 +630,7 @@ def _result_exit_code(result):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--build');p.add_argument('--out');p.add_argument('--b-map');p.add_argument('--plasma-map');p.add_argument('--check-runtime',action='store_true');p.add_argument('--expected-ranks',type=int)
-    p.add_argument('--linear-solver',choices=('auto','mumps','mumps_ooc','superlu_dist','gmres_asm','fgmres_positive'),
+    p.add_argument('--linear-solver',choices=('auto','mumps','mumps_ooc','superlu_dist','gmres_asm','fgmres_positive','fgmres_ams'),
                    help='Linear solver; default HELICON_RF_LU_SOLVER or auto')
     p.add_argument('--mumps-memory-mb',type=int,help='OOC workspace MB per rank (default env or 3000); not total RSS cap')
     p.add_argument('--mumps-scratch-dir',help='Existing writable OOC scratch directory (or HELICON_RF_MUMPS_SCRATCH)')
