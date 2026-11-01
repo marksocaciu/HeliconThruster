@@ -52,8 +52,11 @@ def _linear_solver_options(PETSc, ranks, requested=None, memory_mb=None, scratch
             value = int(os.environ.get(name, default))
             if value < minimum: raise ValueError(f'{name} must be >= {minimum}')
             return value
+        outer_rtol = float(os.environ.get('HELICON_RF_KSP_RTOL', '1e-9'))
+        if not 0 < outer_rtol < 1:
+            raise ValueError('HELICON_RF_KSP_RTOL must be between 0 and 1')
         options = {'ksp_type':'gmres', 'ksp_gmres_restart':integer('HELICON_RF_GMRES_RESTART',30,1),
-                'ksp_rtol':1e-9, 'ksp_atol':0.0,
+                'ksp_rtol':outer_rtol, 'ksp_atol':0.0,
                 'ksp_max_it':integer('HELICON_RF_KSP_MAX_IT',1000,1),
                 # Return the last iterate for diagnostics; solve() still rejects failure.
                 'ksp_error_if_not_converged':False,
