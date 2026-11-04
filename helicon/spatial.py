@@ -129,7 +129,7 @@ class Equations:
         self.particle_scale = self.feed*grid.volumes.ravel()/grid.volumes.sum()
         self.energy_scale = self.power*grid.volumes.ravel()/grid.volumes.sum()
 
-    def evaluate(self, x):
+    def evaluate(self, x, diagnostics=False):
         g, c = self.g, self.c
         n, nn = np.exp(x[0])*1e18, np.exp(x[1])*1e19
         te, phi = x[2], x[3]
@@ -172,10 +172,44 @@ class Equations:
         neutral_res = g.scatter(neutral)+g.boundary_scatter(neutral_b)+source
         current_res = g.scatter(ion-electron)
         energy_res = g.scatter(energy)+g.boundary_scatter(energy_b)+inelastic-self.heating*volume-work
-        return dict(n=n, nn=nn, te=te, phi=phi, nu=nu, ion_res=ion_res,
+        result = dict(n=n, nn=nn, te=te, phi=phi, nu=nu, ion_res=ion_res,
                     neutral_res=neutral_res, current_res=current_res, energy_res=energy_res,
                     boundary_ions=bohm, boundary_neutrals=neutral_b, boundary_energy=energy_b,
                     source=source, inelastic=inelastic, work=work)
+        if diagnostics:
+            # Positive transport terms are net outward from a cell. Work and
+            # prescribed heating enter the energy residual with minus signs.
+            enthalpy = energy-conduction
+            result['energy_budget'] = {
+                'rf_heating_W': self.heating*volume,
+                'ionization_loss_W': E*n*nn*volume*k['ionization_m3_s']*IONIZATION_EV,
+                'excitation_loss_W': E*n*nn*volume*k['excitation_m3_s']*EXCITATION_EV,
+                'elastic_exchange_W': E*n*nn*volume*k['elastic_m3_s']*3*M_E/M_AR*(te-K_B*c['neutral_temperature_K']/E),
+                'conduction_out_W': g.scatter(conduction),
+                'enthalpy_out_W': g.scatter(enthalpy),
+                'boundary_out_W': g.boundary_scatter(energy_b),
+                'electrostatic_work_W': work,
+                'energy_residual_W': energy_res,
+            }
+            result['particle_budget'] = {
+                'ion_internal_out_s': g.scatter(ion),
+                'electron_internal_out_s': g.scatter(electron),
+                'neutral_internal_out_s': g.scatter(neutral),
+                'boundary_ions_out_s': g.boundary_scatter(bohm),
+                'boundary_neutrals_out_s': g.boundary_scatter(neutral_b),
+                'ionization_events_s': source,
+                'ion_residual_s': ion_res, 'neutral_residual_s': neutral_res,
+                'current_residual_particles_s': current_res,
+            }
+            result['face_budget'] = {
+                'left_cell': g.left, 'right_cell': g.right, 'axis': g.axis,
+                'conduction_W': conduction, 'enthalpy_W': enthalpy,
+                'ion_flux_s': ion, 'electron_flux_s': electron,
+                'neutral_flux_s': neutral,
+                'boundary_cell': g.boundary, 'boundary_kind': g.boundary_kind,
+                'boundary_energy_W': energy_b,
+            }
+        return result
 
     def residual(self, flat):
         x = flat.reshape(4, self.g.size)

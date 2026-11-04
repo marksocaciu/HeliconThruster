@@ -1,5 +1,8 @@
 # Gradual prescribed heating redistribution
 
+After a candidate is rejected, use the [saved-state budget diagnostic](spatial-budget.md)
+to compare it with the preceding accepted state without repeating the solves.
+
 Use continuation to test whether changing heating gradually helps the nonlinear
 transport solver reach the RF-shaped endpoint. At each step, solve a steady
 plasma response to
