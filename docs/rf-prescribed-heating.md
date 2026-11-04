@@ -1,5 +1,8 @@
 # Coarse RF to prescribed 2D plasma heating
 
+For a gradual transition from uniform to RF-shaped heating using the previous
+accepted state at each step, see [heating continuation](rf-heating-continuation.md).
+
 This one-way experiment reuses an existing RF solution. It conservatively deposits
 integrated tetrahedron powers into the axisymmetric transport grid, verifies the
 original RF absorption before scaling, and explicitly normalizes the heating to
