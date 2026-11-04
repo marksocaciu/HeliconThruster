@@ -1,5 +1,9 @@
 # Spatial argon benchmark and RF feedback
 
+Spatial runs can optionally select the [Maxwellian Phelps chemistry backend](argon-chemistry.md)
+with a derived 1–20 eV table. The original backend remains the default. Bounds,
+collision rates, energy sinks and diagnostic provenance follow that selection.
+
 For a one-way experiment reusing saved coarse RF cell powers, see
 [coarse RF prescribed heating](rf-prescribed-heating.md). It explicitly normalizes
 the heating to a chosen absorbed power and compares uniform and RF-shaped

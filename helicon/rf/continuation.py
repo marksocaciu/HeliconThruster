@@ -75,6 +75,8 @@ def run(rf_solution, out, absorbed_power_W, plasma_config=None, geometry=None,
     checkpoint()
     try:
         record['source'] = snapshot(out)
+        from ..argon_chemistry import metadata
+        record['transport_chemistry'] = metadata(c)
         rf, wave, hashes, acceptance = inspect_rf(rf_solution, gconfig, allow_exploratory_interface)
         record.update(input_sha256=hashes, interface_acceptance=acceptance,
                       rf_configuration=rf, transport_uniform_B_T=c['uniform_B_T'],

@@ -15,6 +15,9 @@ class PlasmaMap:
             self.fields = {key: data[key].copy() for key in (
                 'electron_density_m3', 'neutral_density_m3',
                 'electron_temperature_eV', 'collision_frequency_s')}
+            from .. import argon_chemistry as chemistry
+            c = {'chemistry_model':str(data['chemistry_model'].item())} if 'chemistry_model' in data else {}
+            low, high = chemistry.bounds(c)
         for faces in (self.rf, self.zf):
             if faces.ndim != 1 or len(faces) < 3 or not np.isfinite(faces).all() or np.any(np.diff(faces) <= 0):
                 raise ValueError('Invalid plasma-map cell faces')
@@ -25,8 +28,8 @@ class PlasmaMap:
             if values.shape != shape or not np.isfinite(values).all() or np.any(values <= 0):
                 raise ValueError(f'Invalid plasma-map field: {key}')
         te = self.fields['electron_temperature_eV']
-        if np.any(te < 1) or np.any(te > 7):
-            raise ValueError('Plasma-map Te must lie in 1–7 eV')
+        if np.any(te < low) or np.any(te > high):
+            raise ValueError(f'Plasma-map Te must lie in {low:g}–{high:g} eV')
 
     def __call__(self, xyz):
         ir, iz = bin_indices(xyz, self.rf, self.zf)

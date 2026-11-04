@@ -1,0 +1,111 @@
+{
+  "source_cross_sections_sha256": "d1db9234e2145056be4d5724cbba9cd6c0f9fc75d0b4717e0227618d5ba253f2",
+  "independent_method": "scipy QUADPACK adaptive integration on each cross-section knot interval",
+  "max_relative_rate_error": 2.501257505868477e-08,
+  "reference": [
+    {
+      "temperature_eV": 1.0,
+      "ionization_m3_s": 2.080131456334866e-21,
+      "ionization_m3_s_interpolation_relative_error": 2.170006272156928e-15,
+      "excitation_m3_s": 6.119711458929002e-20,
+      "excitation_m3_s_interpolation_relative_error": 5.900798869295125e-16,
+      "elastic_m3_s": 1.800166598261396e-14,
+      "elastic_m3_s_interpolation_relative_error": 7.011447993605881e-16,
+      "momentum_m3_s": 1.8001729259860003e-14,
+      "momentum_m3_s_interpolation_relative_error": 1.2269990858844917e-15,
+      "elastic_energy_weighted_eVm3_s": 5.4436739675136205e-14,
+      "elastic_energy_weighted_eVm3_s_interpolation_relative_error": 1.507098599816723e-15
+    },
+    {
+      "temperature_eV": 1.7,
+      "ionization_m3_s": 2.0994610036706546e-18,
+      "ionization_m3_s_interpolation_relative_error": 2.3866391958039628e-08,
+      "excitation_m3_s": 1.1764006362994213e-17,
+      "excitation_m3_s_interpolation_relative_error": 1.630391111396784e-08,
+      "elastic_m3_s": 4.025388917858595e-14,
+      "elastic_m3_s_interpolation_relative_error": 6.377031464217105e-09,
+      "momentum_m3_s": 4.026775264595261e-14,
+      "momentum_m3_s_interpolation_relative_error": 5.954908943241326e-09,
+      "elastic_energy_weighted_eVm3_s": 2.0456453112168215e-13,
+      "elastic_energy_weighted_eVm3_s_interpolation_relative_error": 1.0964552758603866e-08
+    },
+    {
+      "temperature_eV": 3.0,
+      "ionization_m3_s": 1.804848019504417e-16,
+      "ionization_m3_s_interpolation_relative_error": 1.1266044576223094e-08,
+      "excitation_m3_s": 3.94967542219465e-16,
+      "excitation_m3_s_interpolation_relative_error": 1.2691637750824919e-08,
+      "elastic_m3_s": 8.751742132784041e-14,
+      "elastic_m3_s_interpolation_relative_error": 8.847592440066505e-09,
+      "momentum_m3_s": 8.809287367201031e-14,
+      "momentum_m3_s_interpolation_relative_error": 6.91167702716193e-09,
+      "elastic_energy_weighted_eVm3_s": 7.059067103274601e-13,
+      "elastic_energy_weighted_eVm3_s_interpolation_relative_error": 8.109357981760103e-09
+    },
+    {
+      "temperature_eV": 5.3,
+      "ionization_m3_s": 2.6380992764765143e-15,
+      "ionization_m3_s_interpolation_relative_error": 6.397107507156367e-09,
+      "excitation_m3_s": 3.3634672509864717e-15,
+      "excitation_m3_s_interpolation_relative_error": 9.428763969163263e-09,
+      "elastic_m3_s": 1.489129047459136e-13,
+      "elastic_m3_s_interpolation_relative_error": 9.443045193194914e-09,
+      "momentum_m3_s": 1.549144712733766e-13,
+      "momentum_m3_s_interpolation_relative_error": 4.2712590752471096e-09,
+      "elastic_energy_weighted_eVm3_s": 1.7109665495898739e-12,
+      "elastic_energy_weighted_eVm3_s_interpolation_relative_error": 2.8524493274561464e-09
+    },
+    {
+      "temperature_eV": 7.0,
+      "ionization_m3_s": 6.496945276575744e-15,
+      "ionization_m3_s_interpolation_relative_error": 5.883711370182066e-09,
+      "excitation_m3_s": 6.7753916281699125e-15,
+      "excitation_m3_s_interpolation_relative_error": 9.674708676077138e-09,
+      "elastic_m3_s": 1.7314659502345082e-13,
+      "elastic_m3_s_interpolation_relative_error": 1.3507576662663337e-08,
+      "momentum_m3_s": 1.8641893192819646e-13,
+      "momentum_m3_s_interpolation_relative_error": 3.7182439981575774e-09,
+      "elastic_energy_weighted_eVm3_s": 2.32775243784426e-12,
+      "elastic_energy_weighted_eVm3_s_interpolation_relative_error": 6.9523685606102e-10
+    },
+    {
+      "temperature_eV": 10.0,
+      "ionization_m3_s": 1.5732438603348452e-14,
+      "ionization_m3_s_interpolation_relative_error": 1.0158219445158539e-09,
+      "excitation_m3_s": 1.305515493514535e-14,
+      "excitation_m3_s_interpolation_relative_error": 2.107899665208025e-09,
+      "elastic_m3_s": 1.9144282821337808e-13,
+      "elastic_m3_s_interpolation_relative_error": 5.849595355646235e-09,
+      "momentum_m3_s": 2.202304217518719e-13,
+      "momentum_m3_s_interpolation_relative_error": 5.865173717490936e-10,
+      "elastic_energy_weighted_eVm3_s": 3.1652653104683826e-12,
+      "elastic_energy_weighted_eVm3_s_interpolation_relative_error": 4.442761462150613e-10
+    },
+    {
+      "temperature_eV": 13.7,
+      "ionization_m3_s": 2.8408764890911468e-14,
+      "ionization_m3_s_interpolation_relative_error": 2.171732690752122e-10,
+      "excitation_m3_s": 1.9584490383285283e-14,
+      "excitation_m3_s_interpolation_relative_error": 5.834809559795216e-10,
+      "elastic_m3_s": 1.9499558433663175e-13,
+      "elastic_m3_s_interpolation_relative_error": 2.501257505868477e-08,
+      "momentum_m3_s": 2.429888396108285e-13,
+      "momentum_m3_s_interpolation_relative_error": 1.0058904696782077e-10,
+      "elastic_energy_weighted_eVm3_s": 3.931907184891237e-12,
+      "elastic_energy_weighted_eVm3_s_interpolation_relative_error": 2.2125581301450133e-10
+    },
+    {
+      "temperature_eV": 20.0,
+      "ionization_m3_s": 4.8755496037167486e-14,
+      "ionization_m3_s_interpolation_relative_error": 9.060765305043779e-16,
+      "excitation_m3_s": 2.7240094932103406e-14,
+      "excitation_m3_s_interpolation_relative_error": 1.7375730309030126e-15,
+      "elastic_m3_s": 1.8693227837484204e-13,
+      "elastic_m3_s_interpolation_relative_error": 3.3760286327400985e-15,
+      "momentum_m3_s": 2.6292786934411294e-13,
+      "momentum_m3_s_interpolation_relative_error": 1.536150520980143e-15,
+      "elastic_energy_weighted_eVm3_s": 4.916592618944694e-12,
+      "elastic_energy_weighted_eVm3_s_interpolation_relative_error": 1.6429947110804196e-16
+    }
+  ]
+}

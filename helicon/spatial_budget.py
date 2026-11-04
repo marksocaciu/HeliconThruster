@@ -8,7 +8,7 @@ import sys
 import numpy as np
 
 from . import spatial
-from .argon import TE_MIN_EV, TE_MAX_EV
+from . import argon_chemistry as chemistry
 from .records import digest, read_json, write_json, utc_now
 
 ENERGY_LOSSES = ('ionization_loss_W', 'excitation_loss_W', 'elastic_exchange_W',
@@ -20,6 +20,9 @@ def reconstruct(geometry, config, summary, fields):
     if summary.get('model') != spatial.MODEL or summary.get('input') != config:
         raise ValueError('Saved summary and resolved transport configuration differ')
     g = spatial.Grid(geometry, config['nr'], config['nz'])
+    low, high = chemistry.bounds(config)
+    if summary.get('chemistry') is not None and summary['chemistry'] != chemistry.metadata(config):
+        raise ValueError('Saved chemistry provenance differs from diagnostic backend')
     for key, expected in [('r_faces_m',g.rf), ('z_faces_m',g.zf), ('cell_volume_m3',g.volumes)]:
         actual = fields[key]
         if actual.shape != expected.shape or not np.allclose(actual,expected,rtol=1e-12,atol=1e-15):
@@ -79,9 +82,9 @@ def reconstruct(geometry, config, summary, fields):
         row = {'cell':i,'iz':iz,'ir':ir,'r_m':float(g.r[ir]),'z_m':float(g.z[iz]),
                'Te_eV':float(te[i]),'ne_m3':float(ne[i]),'nn_m3':float(nn[i]),
                'potential_V':float(phi[i]),'volume_m3':float(g.volumes.ravel()[i]),
-               'Te_upper_margin_eV':float(TE_MAX_EV-te[i]),
-               'Te_lower_margin_eV':float(te[i]-TE_MIN_EV),
-               'Te_near_bound':bool(min(TE_MAX_EV-te[i],te[i]-TE_MIN_EV)<.01),
+               'Te_upper_margin_eV':float(high-te[i]),
+               'Te_lower_margin_eV':float(te[i]-low),
+               'Te_near_bound':bool(min(high-te[i],te[i]-low)<.01),
                'potential_bound_margin_V':float(500-abs(phi[i])),
                'ne_log_bound_margin':float(20-abs(x[0,i])),
                'nn_log_bound_margin':float(20-abs(x[1,i]))}
@@ -93,6 +96,7 @@ def reconstruct(geometry, config, summary, fields):
             'reconstructed_max_local_residuals':recomputed,
             'global_energy_terms_W':sums,
             'relative_mass_error':float(mass_error),'relative_power_error':float(power_error),
+            'chemistry':chemistry.metadata(config),
             'energy_reconstruction_error_relative_to_power':energy_error,
             'particle_reconstruction_error_relative_to_feed':particle_error,
             'internal_energy_cancellation_relative':cancellation,
@@ -154,8 +158,11 @@ def compare(continuation,out,plots=True):
     try:
         source=out/'source';source.mkdir()
         import shutil
-        for path in (Path(__file__),Path(spatial.__file__),Path(__file__).with_name('argon.py')):
+        for path in (Path(__file__),Path(spatial.__file__),Path(__file__).with_name('argon.py'),
+                     Path(chemistry.__file__)):
             shutil.copy2(path,source/path.name)
+        if chemistry.model(config) != chemistry.LEGACY:
+            shutil.copy2(chemistry.TABLE,source/chemistry.TABLE.name)
         record['diagnostic_source_sha256']={p.name:digest(p) for p in source.iterdir()}
         record['original_solver_source_sha256']=parent.get('source',{}).get('sha256',{})
         cases={};allrows={}

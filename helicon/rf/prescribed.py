@@ -125,8 +125,10 @@ def validate_response(summary, fields):
         validate_spatial(summary)
     except RuntimeError as exc:
         te = fields['electron_temperature_eV']
+        from ..argon_chemistry import bounds
+        low, high = bounds(summary['input'])
         raise RuntimeError(f'{exc}; Te range {te.min():.6g}–{te.max():.6g} eV '
-                           '(supported chemistry: 1–7 eV). See saved transport diagnostics.') from exc
+                           f'(supported chemistry: {low:g}–{high:g} eV). See saved transport diagnostics.') from exc
 
 
 def report(out, result, plots):
@@ -167,6 +169,8 @@ def run(rf_solution, out, absorbed_power_W, plasma_config=None, geometry=None,
     write_json(out/'run.json', record)
     try:
         record['source'] = snapshot(out)
+        from ..argon_chemistry import metadata
+        record['transport_chemistry'] = metadata(c)
         record['stage'] = 'rf_preflight'
         write_json(out/'run.json', record)
         rf, wave, hashes, acceptance = inspect_rf(rf_solution, gconfig, allow_exploratory_interface)
@@ -203,6 +207,7 @@ def run(rf_solution, out, absorbed_power_W, plasma_config=None, geometry=None,
                   'uniform_metrics': metrics(uniform, ufields, grid),
                   'rf_shaped_metrics': metrics(shaped, fields, grid),
                   'transport_uniform_B_T': c['uniform_B_T'],
+                  'transport_chemistry': metadata(c),
                   'rf_feedback_performed': False}
         write_json(out/'experiment_summary.json', result)
         report(out, result, plots)

@@ -13,9 +13,10 @@ from scipy.optimize import least_squares
 from scipy.sparse import lil_matrix
 
 from .argon import (E_CHARGE as E, K_B, M_E, M_AR, IONIZATION_EV,
-                    EXCITATION_EV, TE_MIN_EV, TE_MAX_EV, rates)
+                    EXCITATION_EV)
 from .config import ROOT, load as load_geometry
 from .records import write_json
+from . import argon_chemistry as chemistry
 
 MODEL = 'argon_axisymmetric_dd_v1'
 
@@ -31,7 +32,7 @@ def validate(c):
                 'neutral_temperature_K', 'ion_temperature_eV', 'ion_mobility_m2_V_s',
                 'neutral_diffusivity_m2_s', 'uniform_B_T', 'collision_floor_s-1',
                 'wall_recycling_fraction', 'max_nfev', 'residual_tolerance'}
-    if set(c) != expected or c['model'] != MODEL:
+    if set(c)-{'chemistry_model'} != expected or c['model'] != MODEL:
         raise ValueError('Unexpected spatial argon configuration keys/model')
     for key in expected - {'model', 'uniform_B_T'}:
         x = c[key]
@@ -45,7 +46,8 @@ def validate(c):
         raise ValueError('wall_recycling_fraction must be in [0, 1]')
     if not c['residual_tolerance'] < .01:
         raise ValueError('residual_tolerance must be below .01')
-    if K_B*c['neutral_temperature_K']/E >= TE_MIN_EV:
+    low, _ = chemistry.bounds(c)
+    if K_B*c['neutral_temperature_K']/E >= low:
         raise ValueError('Neutral temperature exceeds rate interval')
     b = np.asarray(c['uniform_B_T'], dtype=float)
     if b.shape != (3,) or not np.isfinite(b).all() or np.any(b[:2] != 0):
@@ -106,9 +108,9 @@ def bernoulli(x):
 
 
 def coefficients(te, nn, c):
-    k = {key: np.array([rates(float(t))[key] for t in te]) for key in
-         ('ionization_m3_s', 'excitation_m3_s', 'elastic_m3_s')}
-    nu = nn*k['elastic_m3_s']+c['collision_floor_s-1']
+    values = [chemistry.rates(float(t), c) for t in te]
+    k = {key: np.array([value[key] for value in values]) for key in values[0]}
+    nu = nn*k.get('momentum_m3_s',k['elastic_m3_s'])+c['collision_floor_s-1']
     mu = E/(M_E*nu)
     beta = E*abs(c['uniform_B_T'][2])/(M_E*nu)
     return k, nu, np.column_stack((mu/(1+beta**2), mu))
@@ -168,6 +170,12 @@ class Equations:
         inelastic = E*n*nn*volume*(k['ionization_m3_s']*IONIZATION_EV
                     +k['excitation_m3_s']*EXCITATION_EV
                     +k['elastic_m3_s']*3*M_E/M_AR*(te-K_B*c['neutral_temperature_K']/E))
+        if chemistry.model(c) != chemistry.LEGACY:
+            ionization_loss = E*n*nn*volume*k['ionization_energy_eVm3_s']
+            excitation_loss = E*n*nn*volume*k['excitation_energy_eVm3_s']
+            elastic_exchange = (E*n*nn*volume*2*M_E/M_AR*k['elastic_energy_weighted_eVm3_s']
+                                *(1-K_B*c['neutral_temperature_K']/E/te))
+            inelastic = ionization_loss+excitation_loss+elastic_exchange
         ion_res = g.scatter(ion)+g.boundary_scatter(bohm)-source
         neutral_res = g.scatter(neutral)+g.boundary_scatter(neutral_b)+source
         current_res = g.scatter(ion-electron)
@@ -209,6 +217,9 @@ class Equations:
                 'boundary_cell': g.boundary, 'boundary_kind': g.boundary_kind,
                 'boundary_energy_W': energy_b,
             }
+            if chemistry.model(c) != chemistry.LEGACY:
+                result['energy_budget'].update(ionization_loss_W=ionization_loss,
+                    excitation_loss_W=excitation_loss, elastic_exchange_W=elastic_exchange)
         return result
 
     def residual(self, flat):
@@ -247,7 +258,7 @@ class Equations:
             matrix = np.zeros(structure.shape)
             steps = np.sqrt(np.finfo(float).eps)*np.maximum(np.abs(x), 1.)
             tslice = slice(2*self.g.size, 3*self.g.size)
-            steps[tslice] *= np.where(x[tslice]+steps[tslice] > TE_MAX_EV, -1., 1.)
+            steps[tslice] *= np.where(x[tslice]+steps[tslice] > chemistry.bounds(self.c)[1], -1., 1.)
             for group in groups:
                 point = x.copy(); point[group] += steps[group]
                 delta = self.residual(point)-base
@@ -291,8 +302,9 @@ def solve(geometry, c, heating=None, initial=None):
         if x.shape != (4, g.size) or not np.isfinite(x).all():
             raise ValueError('Initial state must match the spatial grid')
         x[3] -= x[3, 0]
-    lower = np.r_[np.full(2*g.size, -20.), np.full(g.size, TE_MIN_EV), np.full(g.size, -500.)]
-    upper = np.r_[np.full(2*g.size, 20.), np.full(g.size, TE_MAX_EV), np.full(g.size, 500.)]
+    low, high = chemistry.bounds(c)
+    lower = np.r_[np.full(2*g.size, -20.), np.full(g.size, low), np.full(g.size, -500.)]
+    upper = np.r_[np.full(2*g.size, 20.), np.full(g.size, high), np.full(g.size, 500.)]
     result = least_squares(eq.residual, x.ravel(), bounds=(lower, upper),
                            jac=eq.jacobian(), x_scale='jac',
                            ftol=1e-11, xtol=1e-11, gtol=1e-11,
@@ -339,6 +351,12 @@ def solve(geometry, c, heating=None, initial=None):
                    'Potential gauge is phi[0,0]=0; the potential is not an absolute wall-referenced voltage.',
                    'Electron energy balance is reported; ion kinetic energy and total thrust efficiency are not modeled.',
                    'Numerical convergence is not physical or experimental validation.']}
+    summary['chemistry'] = chemistry.metadata(c)
+    if chemistry.model(c) != chemistry.LEGACY:
+        fields['chemistry_model'] = np.array(chemistry.model(c))
+        summary['limitations'] = [text.replace('existing rate fits restricted to 1–7 eV',
+            f'selected Maxwellian rate table restricted to {low:g}–{high:g} eV')
+            for text in summary['limitations']]
     return summary, fields
 
 

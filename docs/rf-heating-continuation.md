@@ -1,5 +1,8 @@
 # Gradual prescribed heating redistribution
 
+For the same experiment with a documented rate backend extending above 7 eV,
+see [selectable argon chemistry](argon-chemistry.md).
+
 After a candidate is rejected, use the [saved-state budget diagnostic](spatial-budget.md)
 to compare it with the preceding accepted state without repeating the solves.
 
