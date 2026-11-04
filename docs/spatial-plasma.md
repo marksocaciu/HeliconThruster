@@ -1,5 +1,10 @@
 # Spatial argon benchmark and RF feedback
 
+For a one-way experiment reusing saved coarse RF cell powers, see
+[coarse RF prescribed heating](rf-prescribed-heating.md). It explicitly normalizes
+the heating to a chosen absorbed power and compares uniform and RF-shaped
+transport responses, without another RF solve or plasma feedback.
+
 This adds a separate steady 2D axisymmetric, quasineutral fluid benchmark. The
 existing 0D argon model and its coupling command remain available. This is a
 first transport implementation, not a kinetic helicon/nozzle model or an
