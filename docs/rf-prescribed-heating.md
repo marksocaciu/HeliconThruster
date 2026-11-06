@@ -1,5 +1,9 @@
 # Coarse RF to prescribed 2D plasma heating
 
+An optional [sampled-volume transfer](rf-volume-transfer.md) can distribute cell
+powers across fine bins using verified tetrahedron geometry. Centroid transfer
+remains the default; select the new mode explicitly.
+
 For a gradual transition from uniform to RF-shaped heating using the previous
 accepted state at each step, see [heating continuation](rf-heating-continuation.md).
 

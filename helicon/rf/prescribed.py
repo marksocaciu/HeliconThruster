@@ -93,10 +93,20 @@ def inspect_rf(directory, geometry, allow_exploratory_interface=False):
         'material_pml_roundoff_relative_to_input': 1e-12}
 
 
-def normalized_heating(directory, grid, original_power_W, absorbed_power_W):
+def normalized_heating(directory, grid, original_power_W, absorbed_power_W,
+        transfer_method="centroid", transfer_samples=512, transfer_rtol=.005,
+        transfer_cache=None, transfer_out=None):
     if not np.isfinite(absorbed_power_W) or absorbed_power_W <= 0:
         raise ValueError('Prescribed absorbed power must be finite and positive')
-    raw, info = heating_from_rf(directory, grid, original_power_W)
+    if transfer_method == 'centroid':
+        if transfer_cache is not None: raise ValueError('A mapping cache requires sampled transfer')
+        raw, info = heating_from_rf(directory, grid, original_power_W)
+    elif transfer_method == 'sampled':
+        from .volume_transfer import heating
+        if transfer_out is None: raise ValueError('Sampled transfer requires a diagnostic output directory')
+        raw, info = heating(directory, grid, original_power_W, transfer_out,
+            transfer_samples, transfer_rtol, transfer_cache)
+    else: raise ValueError('Unknown heating transfer method')
     if info['occupied_bin_fraction'] < 1:
         raise ValueError('RF mesh leaves empty heating bins; use a coarser transport grid')
     factor = absorbed_power_W/info['integrated_power_W']
@@ -154,7 +164,8 @@ def report(out, result, plots):
 
 
 def run(rf_solution, out, absorbed_power_W, plasma_config=None, geometry=None,
-        allow_exploratory_interface=False, plots=True):
+        allow_exploratory_interface=False, plots=True, heating_transfer="centroid",
+        transfer_samples=512, transfer_rtol=.005, transfer_mapping=None):
     for key in ('OMPI_COMM_WORLD_SIZE', 'PMI_SIZE', 'MV2_COMM_WORLD_SIZE'):
         if int(os.environ.get(key, '1')) > 1:
             raise ValueError('Run this command once with Python, without mpiexec')
@@ -181,8 +192,11 @@ def run(rf_solution, out, absorbed_power_W, plasma_config=None, geometry=None,
         c = copy.deepcopy(c); c['absorbed_power_W'] = float(absorbed_power_W)
         write_json(out/'plasma_config.json', c)
         grid = spatial.Grid(gconfig, c['nr'], c['nz'])
+        record['stage'] = 'heating_transfer'
+        write_json(out/'run.json', record)
         raw, q, transfer = normalized_heating(rf_solution, grid,
-            wave['material_absorption_W']['PLASMA'], absorbed_power_W)
+            wave['material_absorption_W']['PLASMA'], absorbed_power_W, heating_transfer,
+            transfer_samples, transfer_rtol, transfer_mapping, out/'transfer')
         np.savez_compressed(out/'heating.npz', r_faces_m=grid.rf, z_faces_m=grid.zf,
                             q_abs_W_m3=q, original_q_abs_W_m3=raw)
         write_json(out/'transfer.json', transfer)
@@ -239,10 +253,15 @@ def main():
     parser.add_argument('--plasma-config'); parser.add_argument('--geometry')
     parser.add_argument('--allow-exploratory-interface', action='store_true')
     parser.add_argument('--no-plots', action='store_true')
+    parser.add_argument('--heating-transfer', choices=('centroid','sampled'), default='centroid')
+    parser.add_argument('--transfer-samples', type=int, default=512)
+    parser.add_argument('--transfer-rtol', type=float, default=.005)
+    parser.add_argument('--transfer-mapping', help='Previously verified mesh_mapping.npz cache')
     args = parser.parse_args()
     try:
         run(args.rf_solution, args.out, args.absorbed_power_W, args.plasma_config,
-            args.geometry, args.allow_exploratory_interface, not args.no_plots)
+            args.geometry, args.allow_exploratory_interface, not args.no_plots,
+            args.heating_transfer, args.transfer_samples, args.transfer_rtol, args.transfer_mapping)
     except (Exception, KeyboardInterrupt) as exc:
         print(f'Prescribed-heating experiment stopped: {exc}. See {args.out}/run.json if created.', file=sys.stderr)
         return 2

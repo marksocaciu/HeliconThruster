@@ -49,7 +49,8 @@ def render_report(out, record):
 
 
 def run(rf_solution, out, absorbed_power_W, plasma_config=None, geometry=None,
-        steps=10, allow_exploratory_interface=False, plots=True):
+        steps=10, allow_exploratory_interface=False, plots=True, heating_transfer="centroid",
+        transfer_samples=512, transfer_rtol=.005, transfer_mapping=None):
     if isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 1000:
         raise ValueError('Steps must be an integer in [1, 1000]')
     if not np.isfinite(absorbed_power_W) or absorbed_power_W <= 0:
@@ -85,8 +86,11 @@ def run(rf_solution, out, absorbed_power_W, plasma_config=None, geometry=None,
         write_json(out/'plasma_config.json', c)
         write_json(out/'geometry.json', gconfig)
         grid = spatial.Grid(gconfig, c['nr'], c['nz'])
+        record['stage'] = 'heating_transfer'
+        checkpoint()
         raw, target, transfer = normalized_heating(rf_solution, grid,
-            wave['material_absorption_W']['PLASMA'], absorbed_power_W)
+            wave['material_absorption_W']['PLASMA'], absorbed_power_W, heating_transfer,
+            transfer_samples, transfer_rtol, transfer_mapping, out/'transfer')
         uniform = np.full(grid.shape, absorbed_power_W/grid.volumes.sum())
         np.savez_compressed(out/'heating_endpoints.npz', r_faces_m=grid.rf, z_faces_m=grid.zf,
             original_rf_q_W_m3=raw, uniform_q_W_m3=uniform, target_rf_q_W_m3=target)
@@ -163,10 +167,15 @@ def main():
                         help='Equal alpha increments from 0 to 1; default 0.1')
     parser.add_argument('--allow-exploratory-interface', action='store_true')
     parser.add_argument('--no-plots', action='store_true')
+    parser.add_argument('--heating-transfer', choices=('centroid','sampled'), default='centroid')
+    parser.add_argument('--transfer-samples', type=int, default=512)
+    parser.add_argument('--transfer-rtol', type=float, default=.005)
+    parser.add_argument('--transfer-mapping', help='Previously verified mesh_mapping.npz cache')
     args = parser.parse_args()
     try:
         result = run(args.rf_solution,args.out,args.absorbed_power_W,args.plasma_config,
-                     args.geometry,args.steps,args.allow_exploratory_interface,not args.no_plots)
+                     args.geometry,args.steps,args.allow_exploratory_interface,not args.no_plots,
+                     args.heating_transfer,args.transfer_samples,args.transfer_rtol,args.transfer_mapping)
     except (Exception, KeyboardInterrupt) as exc:
         print(f'Continuation stopped: {exc}. See {args.out}/run.json if created.',file=sys.stderr)
         return 2

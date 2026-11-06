@@ -1,5 +1,9 @@
 # Gradual prescribed heating redistribution
 
+If fine transport grids have empty centroid bins, use the optional
+[verified mesh mapping and sampled-volume transfer](rf-volume-transfer.md).
+It reuses the saved RF solution and checks transfer sampling before solving.
+
 For the same experiment with a documented rate backend extending above 7 eV,
 see [selectable argon chemistry](argon-chemistry.md).
 
