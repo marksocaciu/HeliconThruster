@@ -50,7 +50,7 @@ def render_report(out, record):
 
 def run(rf_solution, out, absorbed_power_W, plasma_config=None, geometry=None,
         steps=10, allow_exploratory_interface=False, plots=True, heating_transfer="centroid",
-        transfer_samples=512, transfer_rtol=.005, transfer_mapping=None):
+        transfer_samples=512, transfer_rtol=.005, transfer_mapping=None, initial_state=None):
     if isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 1000:
         raise ValueError('Steps must be an integer in [1, 1000]')
     if not np.isfinite(absorbed_power_W) or absorbed_power_W <= 0:
@@ -96,6 +96,14 @@ def run(rf_solution, out, absorbed_power_W, plasma_config=None, geometry=None,
             original_rf_q_W_m3=raw, uniform_q_W_m3=uniform, target_rf_q_W_m3=target)
         write_json(out/'transfer.json', transfer)
         initial = None
+        seed_info = None
+        if initial_state is not None:
+            from ..spatial_seed import load_seed
+            record['stage'] = 'grid_initialization'
+            checkpoint()
+            initial, seed_info = load_seed(initial_state, gconfig, c, out/'initialization')
+            record['grid_initialization'] = seed_info
+            checkpoint()
         for index in range(steps+1):
             alpha = index/steps
             q = mixed_heating(uniform, target, alpha, grid.volumes, absorbed_power_W)
@@ -113,9 +121,11 @@ def run(rf_solution, out, absorbed_power_W, plasma_config=None, geometry=None,
             balances = summary['balances']
             row = {'alpha':alpha, 'accepted':error is None,
                    'initialized_from_alpha':record['last_accepted_alpha'],
+                   'initialization':('coarse_grid_seed' if seed_info is not None else 'generic') if index==0 else 'previous_alpha',
                    'directory':str(folder.relative_to(out)),
                    'Te_min_eV':float(fields['electron_temperature_eV'].min()),
                    'Te_max_eV':float(fields['electron_temperature_eV'].max()),
+                   'solver_nfev':summary.get('solver',{}).get('nfev'),
                    'max_local_relative_residual':float(max(
                        abs(v) for v in balances['max_local_relative_residuals'].values())),
                    'relative_mass_error':balances['relative_mass_error'],
@@ -142,6 +152,9 @@ def run(rf_solution, out, absorbed_power_W, plasma_config=None, geometry=None,
                 break
         if any(digest(rf_solution/name) != sha for name, sha in hashes.items()):
             raise ValueError('RF source artifacts changed during continuation')
+        if seed_info is not None:
+            from ..spatial_seed import verify_source
+            verify_source(seed_info)
         if record['status'] == 'running':
             record['status'] = 'completed'
         record.update(stage='finished', finished_utc=utc_now())
@@ -171,11 +184,12 @@ def main():
     parser.add_argument('--transfer-samples', type=int, default=512)
     parser.add_argument('--transfer-rtol', type=float, default=.005)
     parser.add_argument('--transfer-mapping', help='Previously verified mesh_mapping.npz cache')
+    parser.add_argument('--initial-state', help='Accepted alpha=0 continuation step on the same physical problem')
     args = parser.parse_args()
     try:
         result = run(args.rf_solution,args.out,args.absorbed_power_W,args.plasma_config,
                      args.geometry,args.steps,args.allow_exploratory_interface,not args.no_plots,
-                     args.heating_transfer,args.transfer_samples,args.transfer_rtol,args.transfer_mapping)
+                     args.heating_transfer,args.transfer_samples,args.transfer_rtol,args.transfer_mapping,args.initial_state)
     except (Exception, KeyboardInterrupt) as exc:
         print(f'Continuation stopped: {exc}. See {args.out}/run.json if created.',file=sys.stderr)
         return 2

@@ -1,5 +1,9 @@
 # Gradual prescribed heating redistribution
 
+If a finer grid fails at the uniform alpha=0 step, use the optional
+[accepted coarse-state initialization](spatial-grid-initialization.md) to test
+whether a more informed initial guess resolves the nonlinear failure.
+
 If fine transport grids have empty centroid bins, use the optional
 [verified mesh mapping and sampled-volume transfer](rf-volume-transfer.md).
 It reuses the saved RF solution and checks transfer sampling before solving.
