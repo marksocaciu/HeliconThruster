@@ -115,6 +115,31 @@ This is a steady branch calculation; it predicts neither ignition nor dynamic
 stability. An unsuccessful run should lead to investigation of rate bounds,
 transport, initial state and heating, rather than loosening conservation checks.
 
+## Fixed-heating radial refinement
+
+From an accepted 8×64 transport state with the frozen heating field:
+
+```bash
+python3 -m helicon.spatial_refine \
+  --source runs/frozen-8x64/steps/step-040 \
+  --geometry runs/frozen-8x64/geometry.json \
+  --out runs/frozen-8x64-to-16x64
+```
+
+Use the actual accepted step directory and its geometry JSON. The command
+reconstructs the source balances, checks the sparse solve on the source grid,
+then doubles the radial resolution with the axial grid fixed. Each pair of
+child cells inherits the parent power density and preserves its integrated
+power. Interpolated fields seed the fine-grid solve. The sparse Newton path
+uses a colored Jacobian, sparse direct factorization, and bounded backtracking.
+
+The output contains both solved states and `comparison.json`, with exit flow
+by ring, outer-half flow, downstream 45 mm ion production, and separate side-
+and back-wall losses. Both solves must pass the usual conservation checks.
+The same-grid comparison also requires agreement within 0.01% on the budget
+quantities and exit flow in each ring. A rejected solve is saved for diagnosis
+and returns exit code 2.
+
 ## Spatial RF coupling
 
 Prepare an independent RF mesh without a magnetic-map override:

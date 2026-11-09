@@ -9,8 +9,9 @@ import math
 from pathlib import Path
 
 import numpy as np
-from scipy.optimize import least_squares
-from scipy.sparse import lil_matrix
+from scipy.optimize import OptimizeResult, least_squares
+from scipy.sparse import csc_matrix, lil_matrix
+from scipy.sparse.linalg import splu
 
 from .argon import (E_CHARGE as E, K_B, M_E, M_AR, IONIZATION_EV,
                     EXCITATION_EV)
@@ -233,8 +234,8 @@ class Equations:
         res[3, 0] = x[3, 0]/5
         return res.ravel()
 
-    def jacobian(self):
-        """Color local stencils to assemble a dense small-benchmark Jacobian.
+    def jacobian(self, sparse=False):
+        """Color local stencils to assemble the Jacobian.
 
         Sparse iterative least-squares was ill-conditioned for electron/ion
         mobility ratios. Coloring keeps the robust dense trust-region solve
@@ -255,7 +256,7 @@ class Equations:
 
         def jac(x):
             base = self.residual(x)
-            matrix = np.zeros(structure.shape)
+            values = np.empty(structure.nnz) if sparse else np.zeros(structure.shape)
             steps = np.sqrt(np.finfo(float).eps)*np.maximum(np.abs(x), 1.)
             tslice = slice(2*self.g.size, 3*self.g.size)
             steps[tslice] *= np.where(x[tslice]+steps[tslice] > chemistry.bounds(self.c)[1], -1., 1.)
@@ -263,8 +264,14 @@ class Equations:
                 point = x.copy(); point[group] += steps[group]
                 delta = self.residual(point)-base
                 for j in group:
-                    matrix[rows[j], j] = delta[rows[j]]/steps[j]
-            return matrix
+                    derivative = delta[rows[j]]/steps[j]
+                    if sparse:
+                        values[structure.indptr[j]:structure.indptr[j+1]] = derivative
+                    else:
+                        values[rows[j], j] = derivative
+            if sparse:
+                return csc_matrix((values, structure.indices, structure.indptr), shape=structure.shape)
+            return values
         return jac
 
     def sparsity(self):
@@ -281,12 +288,43 @@ class Equations:
         return s.tocsr()
 
 
-def solve(geometry, c, heating=None, initial=None):
+def sparse_newton(eq, x, lower, upper, max_nfev, tolerance):
+    """Solve the square residual system with sparse LU and bounded backtracking."""
+    jacobian = eq.jacobian(sparse=True)
+    residual = eq.residual(x)
+    nfev = 1
+    message = 'Sparse Newton residual evaluation limit reached'
+    while nfev < max_nfev:
+        if np.max(np.abs(residual)) <= tolerance:
+            message = 'Sparse Newton residual target reached'
+            break
+        try:
+            direction = splu(jacobian(x)).solve(-residual)
+        except RuntimeError as exc:
+            message = f'Sparse Newton factorization failed: {exc}'
+            break
+        merit = np.linalg.norm(residual)
+        for backtrack in range(min(25, max_nfev - nfev)):
+            trial = np.clip(x + 0.5**backtrack * direction, lower, upper)
+            candidate = eq.residual(trial)
+            nfev += 1
+            if np.linalg.norm(candidate) < merit:
+                x, residual = trial, candidate
+                break
+        else:
+            message = 'Sparse Newton backtracking failed to reduce the residual'
+            break
+    return OptimizeResult(x=x, nfev=nfev, message=message)
+
+
+def solve(geometry, c, heating=None, initial=None, *, solver='dense'):
     validate(c)
     g = Grid(geometry, c['nr'], c['nz'])
     if heating is None:
         heating = np.full(g.shape, c['absorbed_power_W']/g.volumes.sum())
-    if g.size > 512:
+    if solver not in ('dense', 'sparse_newton'):
+        raise ValueError(f'Unknown spatial solver: {solver}')
+    if solver == 'dense' and g.size > 512:
         raise ValueError('Dense benchmark solver is limited to 512 cells; use a scalable Newton solver for larger studies')
     eq = Equations(g, c, heating)
     if initial is None:
@@ -305,10 +343,16 @@ def solve(geometry, c, heating=None, initial=None):
     low, high = chemistry.bounds(c)
     lower = np.r_[np.full(2*g.size, -20.), np.full(g.size, low), np.full(g.size, -500.)]
     upper = np.r_[np.full(2*g.size, 20.), np.full(g.size, high), np.full(g.size, 500.)]
-    result = least_squares(eq.residual, x.ravel(), bounds=(lower, upper),
-                           jac=eq.jacobian(), x_scale='jac',
-                           ftol=1e-11, xtol=1e-11, gtol=1e-11,
-                           max_nfev=c['max_nfev'])
+    if solver == 'sparse_newton':
+        if np.any(x.ravel() < lower) or np.any(x.ravel() > upper):
+            raise ValueError('Initial state is outside solver bounds')
+        result = sparse_newton(eq, x.ravel(), lower, upper, c['max_nfev'],
+                               .01*c['residual_tolerance'])
+    else:
+        result = least_squares(eq.residual, x.ravel(), bounds=(lower, upper),
+                               jac=eq.jacobian(), x_scale='jac',
+                               ftol=1e-11, xtol=1e-11, gtol=1e-11,
+                               max_nfev=c['max_nfev'])
     a = eq.evaluate(result.x.reshape(4, g.size))
     residuals = {key: float(np.max(np.abs(a[key]/scale))) for key, scale in (
         ('ion_res', eq.particle_scale), ('neutral_res', eq.particle_scale),
@@ -341,7 +385,7 @@ def solve(geometry, c, heating=None, initial=None):
                   potential_V=a['phi'].reshape(g.shape),
                   collision_frequency_s=a['nu'].reshape(g.shape))
     summary = {'model': MODEL, 'status': 'converged' if passed else 'not_converged',
-               'balances': balances, 'solver': {'nfev': result.nfev, 'message': result.message},
+               'balances': balances, 'solver': {'method': solver, 'nfev': result.nfev, 'message': result.message},
                'input': c, 'limitations': [
                    'Quasineutral steady drift-diffusion benchmark; ion inertia and nozzle acceleration omitted.',
                    'Prescribed ion mobility, neutral diffusivity and gas temperature; validate transport against pressure and size.',

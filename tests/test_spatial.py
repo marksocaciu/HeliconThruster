@@ -60,6 +60,25 @@ class SpatialPhysics(unittest.TestCase):
             expected = (eq.residual(point)-eq.residual(x))/step
             np.testing.assert_allclose(jac[:, j], expected, rtol=1e-6, atol=1e-6)
 
+    def test_sparse_newton_recovers_dense_solution_from_perturbed_state(self):
+        initial = dict(self.fields, electron_density_m3=self.fields['electron_density_m3']*1.01)
+        result, fields = solve(geometry(), self.c, initial=initial, solver='sparse_newton')
+        self.assertEqual(result['status'], 'converged', result)
+        self.assertGreater(result['solver']['nfev'], 1)
+        for key in ('electron_density_m3', 'neutral_density_m3', 'electron_temperature_eV'):
+            np.testing.assert_allclose(fields[key], self.fields[key], rtol=1e-6)
+
+    def test_radial_refinement_preserves_each_parent_cells_power(self):
+        from helicon.spatial_refine import frozen_heating
+
+        coarse = Grid(geometry(), 3, 4)
+        fine = Grid(geometry(), 6, 4)
+        heating = np.arange(coarse.size, dtype=float).reshape(coarse.shape)
+        refined = frozen_heating(coarse, fine, heating)
+        np.testing.assert_array_equal(refined, np.repeat(heating, 2, axis=1))
+        np.testing.assert_allclose((refined*fine.volumes).reshape(4, 3, 2).sum(axis=2),
+                                   heating*coarse.volumes, rtol=1e-12, atol=0)
+
     def test_heating_and_transport_input_rejection(self):
         c = copy.deepcopy(self.c); c['uniform_B_T'] = [.01, 0, .01]
         with self.assertRaises(ValueError): solve(geometry(), c)
