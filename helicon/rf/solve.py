@@ -189,7 +189,8 @@ def runtime():
 
 
 def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_mb=None,mumps_scratch_dir=None,
-          analysis_only=False, job_memory_mb=None, memory_reserve_mb=2000):
+          analysis_only=False, job_memory_mb=None, memory_reserve_mb=2000,
+          checkpoint_every=100, resume_iterate=None):
     MPI,PETSc,dolfinx=runtime()
     options=_linear_solver_options(PETSc,MPI.COMM_WORLD.size,linear_solver,
                                    mumps_memory_mb,mumps_scratch_dir)
@@ -404,6 +405,15 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
         from .diagnostics import IterationMonitor, linear_diagnostics
         monitor = IterationMonitor(comm,out) if options['ksp_type'] != 'preonly' else None
         if monitor is not None: problem.solver.setMonitor(monitor)
+        iterate_checkpoint = None
+        if monitor is not None:
+            from .iterates import IterateCheckpoint
+            iterate_checkpoint = IterateCheckpoint(comm, out/'iterate-checkpoints', PETSc,
+                every=checkpoint_every, resume=resume_iterate, total_limit=options['ksp_max_it'])
+            problem.solver.setPreSolve(iterate_checkpoint.prepare)
+            problem.solver.setMonitor(iterate_checkpoint)
+        elif resume_iterate:
+            raise ValueError('Iterate restart requires an iterative RF solver')
         try:
             if main_ams:
                 from .ams_main import solve_ams
@@ -412,6 +422,9 @@ def solve(build,out,b_map=None,plasma_map=None,linear_solver=None,mumps_memory_m
             else:
                 solved = _solve_with_options(problem, options, PETSc)
         finally:
+            if iterate_checkpoint is not None and getattr(iterate_checkpoint, 'ready', False):
+                iterate_checkpoint.save(problem.x, problem.solver.getIterationNumber(),
+                                        problem.solver.getResidualNorm())
             if monitor is not None:
                 monitor.close()
                 problem.solver.cancelMonitor()
@@ -640,6 +653,8 @@ def main():
     p.add_argument('--analysis-only',action='store_true',help='MUMPS symbolic analysis only; no factorization')
     p.add_argument('--job-memory-mb',type=float,help='Estimated whole-job admission budget, decimal MB; not an OS cap')
     p.add_argument('--memory-reserve-mb',type=float,default=2000,help='Headroom above assembled RSS plus MUMPS estimate')
+    p.add_argument('--checkpoint-every', type=int, default=100, help='Save finite RF iterate every N iterations (default 100)')
+    p.add_argument('--resume-iterate', help='Path to iterate-checkpoints/latest.json or best.json; use same system and MPI ranks')
     a=p.parse_args()
     if a.expected_ranks is not None:
         MPI,_,_=runtime()
@@ -652,7 +667,7 @@ def main():
         if MPI.COMM_WORLD.rank==0: print(f'DOLFINx {dolfinx.__version__}, PETSc {PETSc.ScalarType}, PETSC_DIR={os.environ.get("PETSC_DIR", "(package default)")}, MPI ranks={MPI.COMM_WORLD.size}')
         return 0
     if not a.build or not a.out: p.error('--build and --out are required for a solve')
-    result=solve(a.build,a.out,a.b_map,a.plasma_map,linear_solver=a.linear_solver,mumps_memory_mb=a.mumps_memory_mb,mumps_scratch_dir=a.mumps_scratch_dir,analysis_only=a.analysis_only,job_memory_mb=a.job_memory_mb,memory_reserve_mb=a.memory_reserve_mb)
+    result=solve(a.build,a.out,a.b_map,a.plasma_map,linear_solver=a.linear_solver,mumps_memory_mb=a.mumps_memory_mb,mumps_scratch_dir=a.mumps_scratch_dir,analysis_only=a.analysis_only,job_memory_mb=a.job_memory_mb,memory_reserve_mb=a.memory_reserve_mb,checkpoint_every=a.checkpoint_every,resume_iterate=a.resume_iterate)
     from mpi4py import MPI
     if MPI.COMM_WORLD.rank==0: print(json.dumps(result,indent=2))
     return _result_exit_code(result)
