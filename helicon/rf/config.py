@@ -36,13 +36,21 @@ def validate(c):
     fields('antenna',('inner_radius_m','radial_thickness_m','ring_width_m','leg_angle_rad','gap_m'))
     mesh_required = {'bulk_m','plasma_m','wall_m','antenna_m','gap_m'}
     mesh_optional = {'interface_m','interface_band_m','interface_transition_m'}
+    pml_optional = {'pml_interface_m', 'pml_interface_band_m', 'pml_interface_transition_m'}
     antenna_optional = {'antenna_band_m','antenna_transition_m'}
     if set(c['mesh']) & antenna_optional and not antenna_optional <= set(c['mesh']):
         raise ValueError('Both antenna band parameters are required together')
-    if not mesh_required <= set(c['mesh']) or set(c['mesh']) - mesh_required - mesh_optional - antenna_optional - {'max_size_gradient'}:
+    if not mesh_required <= set(c['mesh']) or set(c['mesh']) - mesh_required - mesh_optional - pml_optional - antenna_optional - {'max_size_gradient'}:
         raise ValueError('Unexpected mesh keys')
     if set(c['mesh']) & mesh_optional and not mesh_optional <= set(c['mesh']):
         raise ValueError('All three interface refinement parameters are required together')
+    if set(c['mesh']) & pml_optional and not pml_optional <= set(c['mesh']):
+        raise ValueError('All three PML interface refinement parameters are required together')
+    if pml_optional <= set(c['mesh']):
+        if c['mesh']['pml_interface_transition_m'] <= c['mesh']['pml_interface_band_m']:
+            raise ValueError('PML interface transition must exceed band width')
+        if c['mesh']['pml_interface_m'] > c['mesh']['bulk_m']:
+            raise ValueError('PML interface size must not exceed bulk size')
     for key, value in c['mesh'].items(): number(value, 'mesh.'+key)
     if c['mesh'].get('max_size_gradient', 1.) > 1.:
         raise ValueError('max_size_gradient must be in (0, 1]')

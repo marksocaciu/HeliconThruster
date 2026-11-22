@@ -121,6 +121,23 @@ def generate(c,out,scale=1.):
                             'DistMax':interface_end}.items():
                 g.model.mesh.field.setNumber(near,key,val)
             fields.append(near)
+        pml_interface_end = None
+        if 'pml_interface_m' in size:
+            pml_interface_end = transition_end(
+                size, size['pml_interface_m'], size['pml_interface_band_m'],
+                size['pml_interface_transition_m'])
+            distance = g.model.mesh.field.add('Distance')
+            g.model.mesh.field.setNumbers(distance, 'SurfacesList', sorted(interface))
+            g.model.mesh.field.setNumber(distance, 'Sampling', 160)
+            near = g.model.mesh.field.add('Threshold')
+            for key, value in {
+                'InField': distance, 'SizeMin': size['pml_interface_m']*scale,
+                'SizeMax': size['bulk_m']*scale,
+                'DistMin': size['pml_interface_band_m'],
+                'DistMax': pml_interface_end,
+            }.items():
+                g.model.mesh.field.setNumber(near, key, value)
+            fields.append(near)
         f=g.model.mesh.field.add('Min'); g.model.mesh.field.setNumbers(f,'FieldsList',fields); g.model.mesh.field.setAsBackgroundMesh(f)
         for key,val in {'Mesh.MeshSizeMax':size['bulk_m']*scale,'Mesh.MeshSizeFromPoints':0,'Mesh.MeshSizeFromCurvature':0,
                         'Mesh.MeshSizeExtendFromBoundary':0,'Mesh.MshFileVersion':4.1,'Mesh.ElementOrder':1,'Mesh.Algorithm3D':1}.items():
@@ -139,6 +156,12 @@ def generate(c,out,scale=1.):
                 'interface_refinement':({'surfaces':sorted(refinement_surfaces),
                     'size_m':size['interface_m']*scale,'band_m':size['interface_band_m'],
                     'transition_m':interface_end} if 'interface_m' in size else None),
+                'pml_interface_refinement': ({
+                    'surfaces': sorted(interface),
+                    'size_m': size['pml_interface_m']*scale,
+                    'band_m': size['pml_interface_band_m'],
+                    'transition_m': pml_interface_end,
+                } if pml_interface_end is not None else None),
                 'note':'Geometry smoke mesh only; electromagnetic and PML convergence must be checked.'}
         write_json(out/'mesh_report.json',report); return report
     finally: g.finalize()

@@ -28,3 +28,16 @@ class MeshGrading(unittest.TestCase):
         self.assertEqual(report['minSICN_median'],.5)
         mesh.getElementQualities=lambda tags,metric:[-.1,.5,.9]
         with self.assertRaisesRegex(RuntimeError,'Invalid tetrahedra'):quality_report(g,{'AIR':{1}})
+
+
+    def test_pml_interface_parameters_are_complete_and_ordered(self):
+        c = load()
+        c['mesh'].update(pml_interface_m=.02, pml_interface_band_m=.02,
+                         pml_interface_transition_m=.08)
+        validate(c)
+        del c['mesh']['pml_interface_transition_m']
+        with self.assertRaises(ValueError):
+            validate(c)
+        c['mesh']['pml_interface_transition_m'] = .01
+        with self.assertRaises(ValueError):
+            validate(c)
