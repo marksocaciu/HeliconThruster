@@ -1,0 +1,15 @@
+{
+  "frequency_Hz": 27120000.0,
+  "electron_density_m3": 2.642694491179898e18,
+  "collision_frequency_s": 20000000.0,
+  "Bz_T": 0.014,
+  "radius_m": 0.03,
+  "length_m": 0.12,
+  "z_start_m": -0.12,
+  "nr": 8,
+  "nz": 256,
+  "modes": [
+    {"m": 1, "amplitude_V_m": [0.5, 0.0]},
+    {"m": -1, "amplitude_V_m": [0.5, 0.0]}
+  ]
+}

@@ -105,3 +105,15 @@ Reusing the unchanged prepared mesh with the updated solver is supported; use
 a NEW output directory. Expect the negative-power rejection to remain until
 the underlying open-boundary/PML solution is corrected and converged. Do not
 start coupled plasma feedback from this failed vacuum baseline.
+
+## Uniform-cylinder Fourier-mode benchmark
+
+Run the optional modal RF solver with NumPy and SciPy. The example also solves
+a small 3D reference and writes two reconstructed angular slices.
+
+```sh
+python3 -m helicon.rf_modes --out runs/rf-modes --compare-3d --phi-deg 0 90
+```
+
+See [modal RF formulation and outputs](docs/rf-modes.md) for the excitation,
+boundaries, dispersion check, and heating-file format.
