@@ -117,3 +117,15 @@ python3 -m helicon.rf_modes --out runs/rf-modes --compare-3d --phi-deg 0 90
 
 See [modal RF formulation and outputs](docs/rf-modes.md) for the excitation,
 boundaries, dispersion check, and heating-file format.
+
+## Prescribed-current Nagoya antenna
+
+Run the modal cutoff sweep and the 3D prism comparison with the same 1 A peak
+antenna current. Use a fresh output directory.
+
+```sh
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python3 -m helicon.rf_modes.nagoya --out runs/nagoya-01
+```
+
+See [Nagoya current and heating comparison](docs/rf-nagoya-current.md) for the
+source, saved profiles, measured costs, and mesh-refinement results.

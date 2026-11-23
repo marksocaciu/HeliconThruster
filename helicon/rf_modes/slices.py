@@ -29,16 +29,22 @@ def main():
     parser.add_argument('--phi-deg', type=float, nargs='+', required=True)
     args = parser.parse_args()
     run = read_json(args.run/'run.json')
-    if run.get('model') != 'rf_modes_uniform_cylinder_v1' or run['status'] != 'completed':
-        parser.error('Supply a completed rf_modes uniform-cylinder run')
-    if not np.isfinite(args.phi_deg).all():
-        parser.error('Slice angles must be finite')
-    c = run['config']
-    epsilon = cold_epsilon(c['frequency_Hz'], c['electron_density_m3'],
-                           c['collision_frequency_s'], [0, 0, c['Bz_T']])
+    if run['status'] != 'completed' or not np.isfinite(args.phi_deg).all():
+        parser.error('Supply a completed modal run and finite slice angles')
+    if run.get('model') == 'nagoya_prescribed_closed_v1':
+        from .nagoya import setup
+        c, _, epsilon, _ = setup(run['rf_inputs'], run['radial_cells'], run['outer_radius_m'], run['current_peak_A'])
+        files = [(row['m'], row['file']) for row in run['modes']]
+    elif run.get('model') == 'rf_modes_uniform_cylinder_v1':
+        c = run['config']
+        epsilon = cold_epsilon(c['frequency_Hz'], c['electron_density_m3'],
+                               c['collision_frequency_s'], [0, 0, c['Bz_T']])
+        files = [(int(m), row['file']) for m, row in run['modes'].items()]
+    else:
+        parser.error('Unrecognized RF modal model')
     modal = {}
-    for m, record in run['modes'].items():
-        with np.load(args.run/record['file'], allow_pickle=False) as data:
+    for m, filename in files:
+        with np.load(args.run/filename, allow_pickle=False) as data:
             modal[int(m)] = {key: data[key] for key in ('r_edges_m', 'z_edges_m',
                                                         'E_cyl_peak_V_m', 'B_cyl_peak_T')}
     args.out.mkdir(parents=True, exist_ok=False)

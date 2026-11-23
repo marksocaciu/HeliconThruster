@@ -32,11 +32,12 @@ def basis_at(left, dr, dz, m, u, v):
     return basis, curl
 
 
-def solve_mode(config, epsilon, m, amplitude, nr, nz):
+def solve_mode(config, epsilon, m, amplitude, nr, nz, *, radial_edges=None, sheet=None):
     radius, length = config['radius_m'], config['length_m']
     omega = 2*np.pi*config['frequency_Hz']
-    dr, dz = radius/nr, length/nz
-    r = np.linspace(0, radius, nr+1)
+    dz = length/nz
+    r = np.linspace(0, radius, nr+1) if radial_edges is None else radial_edges
+    materials = np.broadcast_to(epsilon, (nr, 3, 3))
     z = np.linspace(0, length, nz+1)
     er = np.arange((nz+1)*nr).reshape(nz+1, nr)
     ez = er.size + np.arange(nz*(nr+1)).reshape(nz, nr+1)
@@ -50,11 +51,11 @@ def solve_mode(config, epsilon, m, amplitude, nr, nz):
     quadrature = [(u, v, wu*wv) for u, wu in zip((nodes+1)/2, weights/2)
                   for v, wv in zip((nodes+1)/2, weights/2)]
     blocks = np.zeros((nr, 8, 8), complex)
-    for i in range(nr):
+    for i, dr in enumerate(np.diff(r)):
         for u, v, weight in quadrature:
             basis, curl = basis_at(r[i], dr, dz, m, u, v)
             blocks[i] += (2*np.pi*(r[i]+dr*u)*dr*dz*weight
-                          * local_operator(basis, curl, epsilon, omega))
+                          * local_operator(basis, curl, materials[i], omega))
     matrix = assemble(cells.reshape(-1, 8), np.tile(blocks, (nz, 1, 1)), size)
 
     # Remove singular traces before solving. At the axis of nonzero modes,
@@ -71,7 +72,7 @@ def solve_mode(config, epsilon, m, amplitude, nr, nz):
     if m:
         col_idx = np.r_[col_idx, cols[angular[:, 1]]]
         rows = np.r_[rows, er[:, 0]]
-        values = np.r_[values, np.full(nz+1, 1/(1j*m*dr))]
+        values = np.r_[values, np.full(nz+1, 1/(1j*m*(r[1]-r[0])))]
     prolong = coo_matrix((values, (rows, col_idx)), shape=(size, independent.sum())).tocsr()
     reduced = prolong.conj().T @ matrix @ prolong
 
@@ -81,28 +82,39 @@ def solve_mode(config, epsilon, m, amplitude, nr, nz):
     fixed[er[[0, -1]]] = True
     fixed[angular[[0, -1]]] = True
     lift = np.zeros(size, complex)
-    if m:
+    if sheet is not None:
+        fixed[angular[:, -1]] = True  # PEC cylindrical enclosure
+    elif m:
         power = abs(m)-1
         # Average Er along the edge, consistent with its line-integral DOF.
         lift[er[0]] = amplitude*nr*np.diff((r/radius)**(power+1))/(power+1)
         lift[angular[0]] = 1j*np.sign(m)*amplitude*r*(r/radius)**power
     else:
         lift[angular[0]] = amplitude*r*r/radius
-    x, input_power, residual = dirichlet_solve(
-        reduced, fixed[independent], lift[independent], omega)
+    if sheet is None:
+        x, input_power, residual = dirichlet_solve(
+            reduced, fixed[independent], lift[independent], omega)
+    else:
+        from .nagoya_source import solve_current
+        ring, axial, azimuthal = sheet.modal_load(m, r, z)
+        load = np.zeros(size, complex)
+        load[ez[:, ring]] = axial
+        load[angular[:, ring]] = azimuthal
+        x, input_power, residual = solve_current(
+            reduced, fixed[independent], prolong.conj().T @ load, omega)
     primal = prolong @ x
     coefficients = primal[cells]
     electric = np.empty((nz, nr, 3), complex)
     magnetic = np.empty_like(electric)
     watts = np.zeros((nz, nr))
     entry_flux = 0.
-    for i in range(nr):
+    for i, dr in enumerate(np.diff(r)):
         basis, curl = basis_at(r[i], dr, dz, m, .5, .5)
         electric[:, i] = coefficients[:, i] @ basis
         magnetic[:, i] = coefficients[:, i] @ curl / (1j*omega)
         for u, v, weight in quadrature:
             basis, _ = basis_at(r[i], dr, dz, m, u, v)
-            q = absorbed_density(coefficients[:, i] @ basis, epsilon, config['frequency_Hz'])
+            q = absorbed_density(coefficients[:, i] @ basis, materials[i], config['frequency_Hz'])
             watts[:, i] += 2*np.pi*(r[i]+dr*u)*dr*dz*weight*q
         for u, weight in zip((nodes+1)/2, weights/2):
             basis, curl = basis_at(r[i], dr, dz, m, u, 0)
@@ -112,6 +124,8 @@ def solve_mode(config, epsilon, m, amplitude, nr, nz):
     fields = dict(r_edges_m=r, z_edges_m=z + config['z_start_m'],
                   Er_edge_V_m=primal[er], Ez_edge_V_m=primal[ez], rEphi_vertex_V=primal[angular],
                   E_cyl_peak_V_m=electric, B_cyl_peak_T=magnetic, cell_absorbed_W=watts)
-    return fields, dict(input_reaction_W=input_power, input_poynting_W=float(entry_flux),
+    drive_stats = (dict(input_reaction_W=input_power, input_poynting_W=float(entry_flux))
+                   if sheet is None else dict(source_work_W=input_power))
+    return fields, dict(**drive_stats,
                         absorption_W=float(watts.sum()), free_relative_residual=residual,
                         free_dofs=int(np.count_nonzero(~fixed[independent])))
