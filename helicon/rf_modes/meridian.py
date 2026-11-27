@@ -37,7 +37,10 @@ def solve_mode(config, epsilon, m, amplitude, nr, nz, *, radial_edges=None, shee
     omega = 2*np.pi*config['frequency_Hz']
     dz = length/nz
     r = np.linspace(0, radius, nr+1) if radial_edges is None else radial_edges
-    materials = np.broadcast_to(epsilon, (nr, 3, 3))
+    # Uniform/radial inputs share element blocks in z. A mapped input carries
+    # one full cylindrical tensor per cell, ordered like the field arrays.
+    layers = nz if np.ndim(epsilon) == 4 else 1
+    materials = np.broadcast_to(epsilon, (layers, nr, 3, 3))
     z = np.linspace(0, length, nz+1)
     er = np.arange((nz+1)*nr).reshape(nz+1, nr)
     ez = er.size + np.arange(nz*(nr+1)).reshape(nz, nr+1)
@@ -50,13 +53,15 @@ def solve_mode(config, epsilon, m, amplitude, nr, nz, *, radial_edges=None, shee
     nodes, weights = leggauss(4)
     quadrature = [(u, v, wu*wv) for u, wu in zip((nodes+1)/2, weights/2)
                   for v, wv in zip((nodes+1)/2, weights/2)]
-    blocks = np.zeros((nr, 8, 8), complex)
+    blocks = np.zeros((layers, nr, 8, 8), complex)
     for i, dr in enumerate(np.diff(r)):
         for u, v, weight in quadrature:
             basis, curl = basis_at(r[i], dr, dz, m, u, v)
-            blocks[i] += (2*np.pi*(r[i]+dr*u)*dr*dz*weight
-                          * local_operator(basis, curl, materials[i], omega))
-    matrix = assemble(cells.reshape(-1, 8), np.tile(blocks, (nz, 1, 1)), size)
+            blocks[:, i] += (2*np.pi*(r[i]+dr*u)*dr*dz*weight
+                             * local_operator(basis, curl, materials[:, i], omega))
+    matrix = assemble(cells.reshape(-1, 8),
+                      np.broadcast_to(blocks, (nz, nr, 8, 8)).reshape(-1, 8, 8), size)
+    del blocks
 
     # Remove singular traces before solving. At the axis of nonzero modes,
     # d_r(r Ephi) = i m Er and Ez = 0 ensure finite curl energy.
@@ -114,7 +119,7 @@ def solve_mode(config, epsilon, m, amplitude, nr, nz, *, radial_edges=None, shee
         magnetic[:, i] = coefficients[:, i] @ curl / (1j*omega)
         for u, v, weight in quadrature:
             basis, _ = basis_at(r[i], dr, dz, m, u, v)
-            q = absorbed_density(coefficients[:, i] @ basis, materials[i], config['frequency_Hz'])
+            q = absorbed_density(coefficients[:, i] @ basis, materials[:, i], config['frequency_Hz'])
             watts[:, i] += 2*np.pi*(r[i]+dr*u)*dr*dz*weight*q
         for u, weight in zip((nodes+1)/2, weights/2):
             basis, curl = basis_at(r[i], dr, dz, m, u, 0)

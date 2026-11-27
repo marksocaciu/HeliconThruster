@@ -55,6 +55,72 @@ python3 -m helicon.rf_modes.slices --run runs/nagoya-01 --phi-deg 0 90 --out run
 python3 -m helicon.rf_modes.nagoya_plot --run runs/nagoya-01 --out runs/nagoya-profiles.png
 ```
 
+### Import the material used by a 3D RF solve
+
+Pass `--material-from-rf SOLUTION --modal-only` to use the inputs of a
+completed 3D plasma RF solution. The source and modal runs must have matching
+plasma chamber dimensions, origin and frequency. The importer verifies the
+saved RF configuration and input hashes, samples the finite-volume density and
+collision frequency and interpolates the axisymmetric magnetic field at each
+modal plasma cell center. A uniform input recorded by the 3D solver comes from
+its own `rf.json`. A spatially uniform Cartesian magnetic field must be axial.
+The current sheet, dielectric wall, exterior and PEC boundaries follow the
+Nagoya configuration. The axially transformed prism reference requires its
+original coefficient assumptions, so the mapped option uses the modal solver.
+
+The command below uses the grid, enclosure, excitation and RF configuration
+from a previous Nagoya run. Set the three input paths to the corresponding
+run directories on the machine that holds the 3D results. Run from the project
+root in Bash.
+
+```bash
+(
+set -e
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
+out=$(mktemp -d runs/nagoya-mapped-XXXXXX)
+echo "Saving in $out"
+python3 -u - "$out" <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+out = Path(sys.argv[1])
+baseline = Path("runs/nagoya-r128-z160-m9")
+sources = {
+    "uniform": Path("runs/rf-pml45-uniform-nagoya-0XISqn/cold-r300-tRAG7y/solution"),
+    "feedback": Path("runs/rf-feedback-cycle2-pml-interface45mm-20261123-085905/solution"),
+}
+record = json.loads((baseline / "run.json").read_text())
+config = out / "nagoya.json"
+config.write_text(json.dumps(record["rf_inputs"], indent=2))
+for name, source in sources.items():
+    subprocess.run([
+        sys.executable, "-m", "helicon.rf_modes.nagoya",
+        "--config", str(config), "--out", str(out / name),
+        "--material-from-rf", str(source), "--modal-only", "--max-m", "11",
+        "--radial-cells", *map(str, record["radial_cells"]), "--nz", str(record["nz"]),
+        "--outer-radius", str(record["outer_radius_m"]), "--current", str(record["current_peak_A"]),
+    ], check=True)
+    result = json.loads((out / name / "run.json").read_text())
+    m9 = next(row for row in result["sweep"] if row["max_abs_m"] == 9)
+    print(name, "cutoff 9 vs 11:", m9["vs_last_cutoff"], flush=True)
+PY
+)
+```
+
+Mapped runs save `material_rz.npz` with `epsilon_r_cyl[iz,ir,3,3]` and
+physical radial and axial faces for the **whole** modal mesh. The tensor basis
+is `(r,phi,z)`. Slice reconstruction reads and verifies this artifact, so
+the source RF directory can be archived elsewhere. As in uniform runs,
+`heating_rz.npz` contains plasma-cell watts and volumes at the largest cutoff.
+Smaller-cutoff maps can be obtained by summing the corresponding signed
+`mode_*.npz` cell watts over the plasma columns. Compare source work and losses
+at the prescribed current for each mode. For a voltage-driven 3D comparison,
+normalize the plasma-cell watts to the same absorbed power and compare on common
+physical bins. With non-nesting axial grids (e.g. 160 to 64), distribute each
+cell's watts by axial overlap and annular area overlap.
+
 Plotting needs Matplotlib. The four radial counts refer to plasma, dielectric
 wall, vacuum between wall and sheet, and vacuum between sheet and enclosure.
 Use `--sectors` to set the 3D angular mesh and `--current` to set peak amperes.

@@ -16,21 +16,22 @@ from .nagoya_prism import solve_prisms
 from .nagoya_source import Sheet
 
 
-def setup(c, counts, enclosure, current):
+def setup(c, counts, enclosure, current, *, uniform_plasma=True):
     h, a, p = c['chamber'], c['antenna'], c['plasma']
     rp = h['radius_m']
     rw = rp+h['wall_thickness_m']
     ra = a['inner_radius_m']+a['radial_thickness_m']/2
     bounds = [0., rp, rw, ra, enclosure]
-    if (min(np.diff(bounds)) <= 0 or p['uniform_B_T'][:2] != [0., 0.]
+    if (min(np.diff(bounds)) <= 0 or (uniform_plasma and p['uniform_B_T'][:2] != [0., 0.])
             or a['ring_width_m'] >= h['length_m']/2):
         raise ValueError('Require nested radial surfaces, an axial B field, and distinct end rings')
     edges = np.r_[0., np.concatenate([np.linspace(lo, hi, n+1)[1:]
                    for lo, hi, n in zip(bounds, bounds[1:], counts)])]
     center = (edges[:-1]+edges[1:])/2
     eps = np.tile(np.eye(3, dtype=complex), (len(center), 1, 1))
-    eps[center<rp] = cold_epsilon(c['frequency_Hz'], p['electron_density_m3'],
-                                  p['collision_frequency_Hz'], p['uniform_B_T'])
+    if uniform_plasma:
+        eps[center<rp] = cold_epsilon(c['frequency_Hz'], p['electron_density_m3'],
+                                      p['collision_frequency_Hz'], p['uniform_B_T'])
     wall = c['dielectric']
     eps[(rp<center)&(center<rw)] *= wall['wall_epsilon_r']*(1+1j*wall['wall_loss_tangent'])
     sheet = Sheet(ra, h['length_m'], a['leg_angle_rad'], a['ring_width_m'], current)
@@ -62,13 +63,17 @@ def run(args):
     from ..rf.config import load
     c = load(args.config)
     counts = args.radial_cells
+    material_source = getattr(args, 'material_from_rf', None)
+    if material_source is not None and not args.modal_only:
+        raise ValueError('--material-from-rf requires --modal-only; the prism reference assumes z-invariant material and axial B')
     sectors_list = [] if args.modal_only else sorted(args.sectors)
     if (args.max_m < 1 or args.max_m % 2 != 1 or not all(n>0 for n in counts)
             or args.nz < 3 or min(args.sectors)<4 or any(n%2 for n in args.sectors)
             or len(set(args.sectors)) != len(args.sectors)
             or not np.isfinite([args.outer_radius, args.current]).all() or args.current <= 0):
         raise ValueError('Require positive cells/current, positive odd max-m, and distinct even sector counts >=4')
-    case, r, eps, sheet = setup(c, counts, args.outer_radius, args.current)
+    case, r, eps, sheet = setup(c, counts, args.outer_radius, args.current,
+                                uniform_plasma=material_source is None)
     nz = args.nz
     z = np.linspace(0, sheet.length, nz+1) + case['z_start_m']
     vol = np.pi*np.diff(z)[:, None]*np.diff(r**2)
@@ -86,6 +91,15 @@ def run(args):
                   modes=[], references=[], sweep=[])
     write_json(out/'run.json', record)
     try:
+        if material_source is not None:
+            from .nagoya_material import sample_rf_material
+            record['material_case'] = 'rf_input_cold_plasma_with_dielectric_wall'
+            eps, provenance = sample_rf_material(material_source, c, r, z, counts[0], eps)
+            material_file = out/'material_rz.npz'
+            np.savez_compressed(material_file, epsilon_r_cyl=eps, r_faces_m=r, z_faces_m=z)
+            record['material_from_rf'] = dict(provenance, file=material_file.name, sha256=digest(material_file))
+            record['source_hashes']['spatial_maps.py'] = digest(ROOT/'helicon/rf/spatial_maps.py')
+            write_json(out/'run.json', record)
         cumulative = np.zeros((nz, len(r)-1))
         snapshots, elapsed = {}, 0.
         plasma = slice(0, counts[0])
@@ -157,6 +171,8 @@ def main():
     p.add_argument('--max-m', type=int, default=15)
     p.add_argument('--sectors', type=int, nargs='+', default=[64, 128])
     p.add_argument('--modal-only', action='store_true', help='Skip prism reference solves')
+    p.add_argument('--material-from-rf', type=Path, metavar='SOLUTION',
+                   help='Use the plasma and magnetic inputs of a completed 3D RF solution (requires --modal-only)')
     args = p.parse_args()
     row = run(args)
     for ref in row['references']:
